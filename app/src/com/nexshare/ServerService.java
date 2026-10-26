@@ -84,6 +84,7 @@ public class ServerService extends Service {
             registerNsd();
             DownloadManager.get(this).startup();
             applyStayOn();
+            TunnelManager.get(this).restoreIfEnabled();
             PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
             wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "nexshare:server");
             wakeLock.acquire();
@@ -141,6 +142,7 @@ public class ServerService extends Service {
         if (server[0] != null) server[0].stop();
         server[0] = null;
         if (mdns != null) mdns.stop();
+        TunnelManager.get(this).stop();
         DownloadManager.get(this).shutdown();
         if (Flavor.ROOT) new Thread(new Runnable() {
             public void run() {

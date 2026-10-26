@@ -114,6 +114,9 @@ public class WebApi implements HttpServer.Handler {
             case "/api/copy": copyMove(req, res, false); break;
             case "/api/system": system(res); break;
             case "/api/wallpaper": setWallpaper(req, res); break;
+            case "/api/tunnel/status": tunnelStatus(res); break;
+            case "/api/tunnel/start": tunnelStart(req, res); break;
+            case "/api/tunnel/stop": TunnelManager.get(ctx).stop(); Settings.setTunnel(ctx, "off", Settings.tunnelToken(ctx)); tunnelStatus(res); break;
             case "/api/dl/list": dlList(res); break;
             case "/api/dl/add": dlAdd(req, res); break;
             case "/api/dl/torrent": dlTorrent(req, res); break;
@@ -646,6 +649,42 @@ public class WebApi implements HttpServer.Handler {
         } catch (Exception e) {
             res.error(500, e.getMessage());
         }
+    }
+
+    // ---------- cloudflare tunnel ----------
+
+    private void tunnelStatus(HttpServer.Response res) throws IOException {
+        TunnelManager tm = TunnelManager.get(ctx);
+        JSONObject o = new JSONObject();
+        put(o, "supported", tm.supported());
+        put(o, "state", tm.state().name().toLowerCase(Locale.ROOT));
+        put(o, "url", tm.url());
+        put(o, "error", tm.error());
+        put(o, "mode", Settings.tunnelMode(ctx));
+        put(o, "hasToken", !Settings.tunnelToken(ctx).isEmpty());
+        put(o, "log", tm.logTail());
+        res.json(200, o.toString());
+    }
+
+    private void tunnelStart(HttpServer.Request req, HttpServer.Response res) throws IOException {
+        JSONObject b;
+        try {
+            b = new JSONObject(req.bodyString(1 << 16));
+        } catch (Exception e) {
+            res.error(400, "bad request");
+            return;
+        }
+        String mode = b.optString("mode", "quick");
+        String token = b.optString("token", Settings.tunnelToken(ctx));
+        // Exposing the files to the internet without a PIN would be reckless: turn it on.
+        if (!Settings.pinEnabled(ctx)) Settings.setPinEnabled(ctx, true);
+        try {
+            TunnelManager.get(ctx).start(mode, token);
+        } catch (Exception e) {
+            res.error(500, e.getMessage());
+            return;
+        }
+        tunnelStatus(res);
     }
 
     // ---------- download station ----------

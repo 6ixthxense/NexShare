@@ -35,6 +35,14 @@ foreach ($art in @('libtorrent4j', 'libtorrent4j-android-arm64', 'libtorrent4j-a
     }
 }
 
+foreach ($cf in @('arm64', 'arm')) {
+    $bin = Join-Path $libs "cloudflared-linux-$cf"
+    if (-not (Test-Path $bin)) {
+        Write-Host "== cloudflared: $cf"
+        Invoke-WebRequest "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-$cf" -OutFile $bin
+    }
+}
+
 Write-Host '== platform 34 + build-tools 34 + 36 (accepting SDK licenses)'
 $sm = "$Sdk\cmdline-tools\latest\bin\sdkmanager.bat"
 ('y`n' * 20) -replace '`n', "`n" | & $sm --sdk_root=$Sdk --licenses | Out-Null

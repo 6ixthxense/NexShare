@@ -34,6 +34,10 @@ root prompt.
 - **Download Station** — download from http/https links or BitTorrent
   (magnet links and `.torrent` files, via libtorrent4j) straight to the phone,
   with pause/resume, progress, speed and peers.
+- **Remote Access (Cloudflare Tunnel)** — expose the server on the internet with one
+  tap. Get a throwaway `https://<name>.trycloudflare.com` URL, or paste a named-tunnel
+  token to bind your own domain. `cloudflared` is bundled (arm64 + arm), so no Termux
+  needed. Enabling a tunnel force-enables the PIN.
 - **Wallpaper** — generate NexOS-branded wallpapers and set them on the phone,
   or set any image in File Station as wallpaper.
 - **System widgets** — System Health, Resource Monitor (CPU/RAM/network),
@@ -58,7 +62,7 @@ No Android Studio needed — the scripts fetch a private JDK + Android SDK into
 `.tools/` and the libtorrent4j jars into `libs/`.
 
 ```powershell
-./setup.ps1          # one-time: downloads JDK 17 + Android SDK + libtorrent4j (~550 MB)
+./setup.ps1          # one-time: downloads JDK 17 + Android SDK + libtorrent4j + cloudflared (~620 MB)
 ./build.ps1          # builds both editions into dist/
 ./build.ps1 -Flavor root     # or just one edition: normal | root
 ```
@@ -76,7 +80,7 @@ app/src/com/nexshare/*.java  HTTP server, mDNS, file/download/root APIs, Android
 app/assets/web/              the web desktop (index.html, style.css, app.js)
 app/res/                     launcher icon
 build.ps1 / setup.ps1        Gradle-less build + toolchain bootstrap
-libs/                        libtorrent4j jars (fetched by setup.ps1)
+libs/                        libtorrent4j jars + cloudflared binaries (fetched by setup.ps1)
 ```
 
 ## Notes & safety

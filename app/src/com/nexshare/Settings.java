@@ -40,6 +40,19 @@ public final class Settings {
         prefs(c).edit().putBoolean("pinEnabled", on).apply();
     }
 
+    public static String tunnelMode(Context c) {
+        return prefs(c).getString("tunnelMode", "off");
+    }
+
+    public static String tunnelToken(Context c) {
+        return prefs(c).getString("tunnelToken", "");
+    }
+
+    public static void setTunnel(Context c, String mode, String token) {
+        prefs(c).edit().putString("tunnelMode", mode == null ? "off" : mode)
+            .putString("tunnelToken", token == null ? "" : token).apply();
+    }
+
     public static boolean keepScreenOn(Context c) {
         return prefs(c).getBoolean("keepScreenOn", true);
     }

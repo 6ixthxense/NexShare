@@ -16,3 +16,6 @@ Thumbs.db
 
 # stale root-level apk (use dist/ + Releases)
 /NexShare*.apk
+
+# cloudflared binaries (fetched by setup.ps1)
+libs/cloudflared-*

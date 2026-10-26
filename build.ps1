@@ -21,6 +21,8 @@ $Out = Join-Path $Root "build\$Flavor"
 $IsRootFlavor = $Flavor -eq 'root'
 $LibJar = Join-Path $Root 'libs\libtorrent4j-2.1.0-39.jar'
 $NativeJars = @{ 'arm64-v8a' = 'libs\libtorrent4j-android-arm64-2.1.0-39.jar'; 'armeabi-v7a' = 'libs\libtorrent4j-android-arm-2.1.0-39.jar' }
+# cloudflared binaries, bundled as lib*.so so they land executable in nativeLibraryDir.
+$Cloudflared = @{ 'arm64-v8a' = 'libs\cloudflared-linux-arm64'; 'armeabi-v7a' = 'libs\cloudflared-linux-arm' }
 
 function Run($exe, [string[]]$argv) {
     $ErrorActionPreference = 'Continue' # tools write notes to stderr; rely on exit codes
@@ -90,6 +92,13 @@ foreach ($abi in $NativeJars.Keys) {
         $rs = $e.Open(); $ws = $dst.Open(); $rs.CopyTo($ws); $ws.Dispose(); $rs.Dispose()
     }
     $src.Dispose()
+}
+foreach ($abi in $Cloudflared.Keys) {
+    $bin = Join-Path $Root $Cloudflared[$abi]
+    if (Test-Path $bin) {
+        $dst = $zip.CreateEntry("lib/$abi/libcloudflared.so")
+        $rs = [IO.File]::OpenRead($bin); $ws = $dst.Open(); $rs.CopyTo($ws); $ws.Dispose(); $rs.Dispose()
+    }
 }
 $zip.Dispose()
 Run "$BT\zipalign.exe" @('-v', '-p', '-f', '4', "$Out\unaligned.apk", "$Out\aligned.apk") | Out-Null
