@@ -1,0 +1,18 @@
+# Toolchain and build outputs (fetched by setup.ps1 / produced by build.ps1)
+.tools/
+build/
+dist/
+libs/*.jar
+
+# Signing material — never publish
+*.keystore
+keystore.pass
+*.idsig
+
+# Local cruft
+*.log
+Thumbs.db
+.DS_Store
+
+# stale root-level apk (use dist/ + Releases)
+/NexShare*.apk
