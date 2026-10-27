@@ -1756,7 +1756,7 @@ function Terminal(body, win) {
   const ps = el('span', { class: 'ps', text: '/data/local/tmp' });
   const input = el('input', { spellcheck: 'false', autocapitalize: 'off', autocomplete: 'off', placeholder: 'พิมพ์คำสั่งแล้ว Enter' });
   const st = { cwd: '/data/local/tmp', history: store.get('term.hist', []), hi: -1, busy: false };
-  const quick = ['ls -la', 'pwd', 'id', 'getprop ro.product.model', 'df -h', 'top -n 1 | head', 'pm list packages -3', 'logcat -d -t 40'];
+  const quick = ['ls -la', 'busybox | head -40', 'id', 'getprop ro.product.model', 'df -h', 'free -m', 'ps -A | head', 'pm list packages -3'];
   const bar = el('div', { class: 'term-bar' }, ...quick.map(c => el('button', { class: 'term-chip', text: c, onclick: () => run(c) })));
   const inBar = el('div', { class: 'term-in' }, ps, input);
   body.append(el('div', { class: 'term' }, bar, out, inBar));
@@ -1816,7 +1816,9 @@ function Terminal(body, win) {
         input.disabled = true;
         return;
       }
-      line('NexShare root shell' + (s.termux ? ' · พบ Termux (ใช้แพ็กเกจของ Termux ได้)' : ''));
+      line('NexShare root shell'
+        + (s.busybox ? ' · มี busybox (~300 คำสั่ง: ls, grep, sed, awk, tar, vi, wget, top…)' : '')
+        + (s.termux ? ' · พบ Termux (ใช้แพ็กเกจของ Termux ได้ด้วย)' : ''));
       run('id && getprop ro.product.model');
       input.focus();
     } catch (e) { out.append(el('div', { class: 'notice', text: e.message })); }

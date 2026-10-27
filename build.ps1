@@ -23,6 +23,8 @@ $LibJar = Join-Path $Root 'libs\libtorrent4j-2.1.0-39.jar'
 $NativeJars = @{ 'arm64-v8a' = 'libs\libtorrent4j-android-arm64-2.1.0-39.jar'; 'armeabi-v7a' = 'libs\libtorrent4j-android-arm-2.1.0-39.jar' }
 # cloudflared binaries, bundled as lib*.so so they land executable in nativeLibraryDir.
 $Cloudflared = @{ 'arm64-v8a' = 'libs\cloudflared-linux-arm64'; 'armeabi-v7a' = 'libs\cloudflared-linux-arm' }
+# busybox (one static binary, ~300 unix tools) for the root edition's terminal.
+$Busybox = @{ 'arm64-v8a' = 'libs\busybox-arm64'; 'armeabi-v7a' = 'libs\busybox-arm' }
 
 function Run($exe, [string[]]$argv) {
     $ErrorActionPreference = 'Continue' # tools write notes to stderr; rely on exit codes
@@ -98,6 +100,15 @@ foreach ($abi in $Cloudflared.Keys) {
     if (Test-Path $bin) {
         $dst = $zip.CreateEntry("lib/$abi/libcloudflared.so")
         $rs = [IO.File]::OpenRead($bin); $ws = $dst.Open(); $rs.CopyTo($ws); $ws.Dispose(); $rs.Dispose()
+    }
+}
+if ($IsRootFlavor) {
+    foreach ($abi in $Busybox.Keys) {
+        $bin = Join-Path $Root $Busybox[$abi]
+        if (Test-Path $bin) {
+            $dst = $zip.CreateEntry("lib/$abi/libbusybox.so")
+            $rs = [IO.File]::OpenRead($bin); $ws = $dst.Open(); $rs.CopyTo($ws); $ws.Dispose(); $rs.Dispose()
+        }
     }
 }
 $zip.Dispose()

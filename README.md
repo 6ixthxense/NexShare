@@ -14,7 +14,7 @@ Built with plain Java and a hand-written HTTP server — no Gradle, no AndroidX.
 | Package id | `com.nexshare` | `com.nexshare.root` |
 | File Station, Media Player, Download Station, Wallpaper | ✓ | ✓ |
 | Install APKs from the web UI | prompts on the phone | **silent** (`pm install`) |
-| Terminal (root shell, uses Termux packages if present) | — | ✓ |
+| Terminal (root shell, bundled BusyBox ~300 tools, uses Termux packages too) | — | ✓ |
 | Live screen mirror + remote tap/swipe/keys | — | ✓ |
 | Keep screen on across the whole device | foreground only | `svc power stayon` |
 | App manager (disable/uninstall/force-stop/clear) | open only | full |
@@ -80,7 +80,7 @@ app/src/com/nexshare/*.java  HTTP server, mDNS, file/download/root APIs, Android
 app/assets/web/              the web desktop (index.html, style.css, app.js)
 app/res/                     launcher icon
 build.ps1 / setup.ps1        Gradle-less build + toolchain bootstrap
-libs/                        libtorrent4j jars + cloudflared binaries (fetched by setup.ps1)
+libs/                        libtorrent4j jars + cloudflared + busybox (fetched by setup.ps1)
 ```
 
 ## Notes & safety

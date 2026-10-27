@@ -56,6 +56,7 @@ public class RootApi {
         put(o, "flavor", Flavor.ROOT ? "root" : "normal");
         put(o, "root", RootShell.available());
         put(o, "termux", new File("/data/data/com.termux/files/usr/bin").isDirectory());
+        put(o, "busybox", ToolBox.hasBusybox(ctx));
         res.json(200, o.toString());
     }
 
@@ -77,10 +78,13 @@ public class RootApi {
         }
         String cmd = body.optString("cmd");
         String cwd = body.optString("cwd", "/data/local/tmp");
-        // Prefer Termux's tools when that app is present, so familiar packages work.
+        // PATH: our bundled busybox applets, then Termux's tools if that app is present, then system.
         String tx = RootShell.termuxPrefix();
-        String path = (new File(tx + "/bin").isDirectory() ? tx + "/bin:" : "") + "/system/bin:/system/xbin:/sbin";
-        String wrapped = "export PATH=" + path + ":$PATH; export HOME=/data/local/tmp; cd " + RootShell.q(cwd) + " 2>/dev/null; " + cmd + "; echo \"\\nNEX_CWD=$(pwd)\"";
+        String bbBin = ToolBox.busyboxBinDir(ctx);
+        String path = (bbBin != null ? bbBin + ":" : "") + (new File(tx + "/bin").isDirectory() ? tx + "/bin:" : "") + "/system/bin:/system/xbin:/sbin";
+        String wrapped = ToolBox.setupPrelude(ctx)
+            + "export PATH=" + path + ":$PATH; export HOME=/data/local/tmp; export TERM=xterm-256color; cd " + RootShell.q(cwd) + " 2>/dev/null; "
+            + cmd + "; echo \"\\nNEX_CWD=$(pwd)\"";
         String out;
         try {
             out = RootShell.main().exec(wrapped, 120000);

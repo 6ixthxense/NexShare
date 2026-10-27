@@ -19,3 +19,6 @@ Thumbs.db
 
 # cloudflared binaries (fetched by setup.ps1)
 libs/cloudflared-*
+
+# busybox binaries (fetched by setup.ps1)
+libs/busybox-*

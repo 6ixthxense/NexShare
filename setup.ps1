@@ -43,6 +43,15 @@ foreach ($cf in @('arm64', 'arm')) {
     }
 }
 
+$bbBase = 'https://github.com/Magisk-Modules-Repo/busybox-ndk/raw/master'
+foreach ($bb in @(@{n='busybox-arm64'; u="$bbBase/busybox-arm64"}, @{n='busybox-arm'; u="$bbBase/busybox-arm"})) {
+    $bin = Join-Path $libs $bb.n
+    if (-not (Test-Path $bin)) {
+        Write-Host "== busybox: $($bb.n)"
+        Invoke-WebRequest $bb.u -OutFile $bin
+    }
+}
+
 Write-Host '== platform 34 + build-tools 34 + 36 (accepting SDK licenses)'
 $sm = "$Sdk\cmdline-tools\latest\bin\sdkmanager.bat"
 ('y`n' * 20) -replace '`n', "`n" | & $sm --sdk_root=$Sdk --licenses | Out-Null
