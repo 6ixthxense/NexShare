@@ -20,6 +20,12 @@ function el(tag, attrs, ...kids) {
   return e;
 }
 
+// Like node.replaceChildren but drops null/false/undefined args (which would otherwise
+// be inserted as the literal text "null"/"false").
+function fill(node, ...kids) {
+  node.replaceChildren(...kids.flat().filter(k => k != null && k !== false));
+}
+
 const store = {
   get(k, d) { try { const v = localStorage.getItem('ns.' + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { localStorage.setItem('ns.' + k, JSON.stringify(v)); } catch { /* private mode */ } },
@@ -1016,7 +1022,7 @@ function ControlPanel(body) {
   const render = () => {
     const s = Stats.last || {};
     const urls = [`http://${s.host || 'nexshare.local'}:${s.port || 8080}`, s.ip ? `http://${s.ip}:${s.port}` : null].filter(Boolean);
-    pane.replaceChildren(
+    fill(pane,
       el('h2', { text: 'แผงควบคุม' }),
       State.roots.length && !State.roots[0].readable ? el('div', { class: 'notice', style: { margin: '0 0 12px' }, text: 'ยังไม่ได้ให้สิทธิ์เข้าถึงไฟล์ — เปิดแอป NexShare บนมือถือแล้วกด "อนุญาตให้เข้าถึงไฟล์ทั้งหมด"' }) : null,
       Auth.pinRequired === false ? el('div', { class: 'notice', style: { margin: '0 0 12px' }, text: 'ปิดการใช้ PIN อยู่ ใครก็ตามใน Wi-Fi เดียวกันเข้าถึงไฟล์ได้ เปิด PIN ได้ในแอปบนมือถือ' }) : null,
@@ -2136,7 +2142,7 @@ function RemoteAccess(body, win) {
     lastState = s;
     const connected = s.state === 'connected';
     const dotColor = { off: '#9aa6b2', starting: '#f0a020', connected: '#2fb36b', error: '#e5484d' }[s.state];
-    pane.replaceChildren(
+    fill(pane,
       el('h2', null, 'เข้าถึงจากอินเทอร์เน็ต (Cloudflare Tunnel)'),
       !s.supported ? el('div', { class: 'notice', text: 'มือถือเครื่องนี้ไม่รองรับ (ไม่มีไฟล์ cloudflared สำหรับ CPU นี้) — ใช้ได้เฉพาะในวง Wi-Fi เดียวกัน' }) : null,
       el('div', { class: 'card' },
