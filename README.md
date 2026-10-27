@@ -1,11 +1,25 @@
 # NexShare
 
+**English** · [ภาษาไทย](README.th.md)
+
 Turn your Android phone into a tiny NAS. NexShare runs a web server on the phone
 and serves a Synology-DSM-style desktop you open from any device on the same
 Wi-Fi at **http://nexshare.local:8080** (or the phone's IP). Browse, upload,
 download, stream and manage the phone's files from a browser.
 
 Built with plain Java and a hand-written HTTP server — no Gradle, no AndroidX.
+
+## Screenshots
+
+The web desktop, open in a browser on another device:
+
+![NexShare web desktop](docs/screenshots/web-desktop.png)
+
+The Android app (Root edition):
+
+<img src="docs/screenshots/app.png" alt="NexShare Android app" width="320">
+
+*(running on real hardware; the access PIN is redacted)*
 
 ## Two editions
 
