@@ -50,6 +50,9 @@ jobs:
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: '17' }
       - uses: android-actions/setup-android@v3
+        with:
+          # The default ("tools platform-tools") fails: cmdline-tools 16+ no longer has a "tools" package.
+          packages: 'platform-tools'
       - name: Fetch SDK packages and libraries
         run: ./setup.sh
       - name: Signing key
