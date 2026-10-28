@@ -27,7 +27,8 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import javax.net.ssl.SSLServerSocketFactory;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLSocket;
 
 /**
  * Minimal HTTP/1.1 server with keep-alive, chunked request bodies, 100-continue,
@@ -413,6 +414,7 @@ public class HttpServer {
     private final Handler handler;
     private final boolean tls;
     private ServerSocket server;
+    private SSLContext sslContext;
     private ThreadPoolExecutor pool;
     private volatile boolean running;
     public final AtomicInteger activeConnections = new AtomicInteger();
@@ -432,9 +434,14 @@ public class HttpServer {
         start(port, null);
     }
 
-    /** Starts listening; with a non-null factory the server speaks HTTPS. */
-    public void start(int port, SSLServerSocketFactory ssl) throws IOException {
-        server = ssl != null ? ssl.createServerSocket() : new ServerSocket();
+    /**
+     * Starts listening; with a non-null context the server speaks HTTPS. The HTTPS port still
+     * accepts plain TCP and looks at the first byte: a TLS handshake continues as HTTPS, while
+     * someone who typed http:// by mistake gets a redirect instead of a dead connection.
+     */
+    public void start(int port, SSLContext ssl) throws IOException {
+        sslContext = ssl;
+        server = new ServerSocket();
         server.setReuseAddress(true);
         server.bind(new InetSocketAddress(port), 64);
         // Bounded pool: a flood of connections can't exhaust memory with threads.
@@ -498,14 +505,56 @@ public class HttpServer {
         if (pool != null) pool.shutdownNow();
     }
 
+    /** TLS records start with 0x16 (handshake); anything else on the HTTPS port is plain HTTP. */
+    private Socket upgradeOrRedirect(Socket s) throws IOException {
+        InputStream rawIn = s.getInputStream();
+        int first = rawIn.read();
+        if (first < 0) return null;
+        if (first == 0x16) {
+            SSLSocket ssl = (SSLSocket) sslContext.getSocketFactory()
+                .createSocket(s, new java.io.ByteArrayInputStream(new byte[]{(byte) first}), true);
+            ssl.setUseClientMode(false);
+            ssl.startHandshake();
+            return ssl;
+        }
+        // Plain HTTP sent to the HTTPS port: answer with a redirect to the same URL over https.
+        InputStream in = new java.io.SequenceInputStream(new java.io.ByteArrayInputStream(new byte[]{(byte) first}), rawIn);
+        String line = readLine(in);
+        String path = "/";
+        if (line != null) {
+            String[] parts = line.split(" ");
+            if (parts.length >= 2 && parts[1].startsWith("/")) path = parts[1];
+        }
+        String host = null, h;
+        int count = 0;
+        while ((h = readLine(in)) != null && !h.isEmpty() && ++count < 100) {
+            if (h.regionMatches(true, 0, "host:", 0, 5)) host = h.substring(5).trim();
+        }
+        if (host == null || host.isEmpty() || !host.matches("[A-Za-z0-9.\\-\\[\\]:]+")) {
+            host = s.getLocalAddress().getHostAddress() + ":" + s.getLocalPort();
+        }
+        String location = "https://" + host + path;
+        String body = "<a href=\"" + location.replace("\"", "%22").replace("<", "%3C") + "\">" + "Use HTTPS</a>\n";
+        OutputStream out = s.getOutputStream();
+        out.write(("HTTP/1.1 301 Moved Permanently\r\nLocation: " + location + "\r\nContent-Type: text/html; charset=utf-8\r\n"
+            + "Content-Length: " + body.length() + "\r\nConnection: close\r\n\r\n" + body).getBytes(StandardCharsets.UTF_8));
+        out.flush();
+        return null;
+    }
+
     void serve(Socket s) {
         activeConnections.incrementAndGet();
         try {
             s.setSoTimeout(60000);
             s.setTcpNoDelay(true);
+            String remote = s.getInetAddress().getHostAddress();
+            if (tls) {
+                Socket ssl = upgradeOrRedirect(s);
+                if (ssl == null) return;
+                s = ssl;
+            }
             InputStream in = new BufferedInputStream(s.getInputStream(), 65536);
             OutputStream out = new BufferedOutputStream(s.getOutputStream(), 65536);
-            String remote = s.getInetAddress().getHostAddress();
             while (running) {
                 String line = readLine(in);
                 if (line == null) break;

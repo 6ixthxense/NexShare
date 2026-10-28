@@ -16,7 +16,6 @@ import java.util.List;
 
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
-import javax.net.ssl.SSLServerSocketFactory;
 
 /**
  * HTTPS for the LAN: a self-signed certificate (generated once, stored as PKCS#12 in the app's
@@ -77,12 +76,12 @@ public final class TlsManager {
         return k;
     }
 
-    public SSLServerSocketFactory serverSocketFactory() throws Exception {
+    public SSLContext sslContext() throws Exception {
         KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
         kmf.init(keyStore(), pw());
         SSLContext sc = SSLContext.getInstance("TLS");
         sc.init(kmf.getKeyManagers(), null, null);
-        return sc.getServerSocketFactory();
+        return sc;
     }
 
     public X509Certificate certificate() throws Exception {

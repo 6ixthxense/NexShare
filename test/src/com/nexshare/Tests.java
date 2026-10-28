@@ -343,7 +343,7 @@ public final class Tests {
             SSLContext sc = SSLContext.getInstance("TLS");
             sc.init(kmf.getKeyManagers(), null, null);
             HttpServer s = new HttpServer((req, res) -> res.text(200, "text/plain", "secure=" + req.secure), true);
-            s.start(0, sc.getServerSocketFactory());
+            s.start(0, sc);
             try {
                 final X509Certificate want = (X509Certificate) loaded.getCertificate(CertGen.ALIAS);
                 SSLContext client = SSLContext.getInstance("TLS");
@@ -360,6 +360,12 @@ public final class Tests {
                     String r = new String(readAll(sock.getInputStream()), StandardCharsets.US_ASCII);
                     check(r.startsWith("HTTP/1.1 200") && r.endsWith("secure=true"), r);
                 }
+                // Plain http:// typed against the HTTPS port: redirect instead of a dead connection.
+                String plain = exchange(s.port(), "GET /files?x=1 HTTP/1.1\r\nHost: 192.168.1.45:8443\r\n\r\n");
+                check(plain.startsWith("HTTP/1.1 301") && plain.contains("Location: https://192.168.1.45:8443/files?x=1\r\n"), plain);
+                // A hostile Host header can't inject headers or markup into the redirect.
+                String evil = exchange(s.port(), "GET / HTTP/1.1\r\nHost: evil\"><script>\r\n\r\n");
+                check(evil.startsWith("HTTP/1.1 301") && !evil.contains("<script>") && evil.contains("Location: https://127.0.0.1:"), evil);
             } finally {
                 s.stop();
                 f.delete();
