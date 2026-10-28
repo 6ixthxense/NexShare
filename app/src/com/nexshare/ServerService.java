@@ -21,13 +21,19 @@ import java.net.Inet4Address;
 public class ServerService extends Service {
 
     public static final int PORT = 8080;
+    public static final int HTTPS_PORT = 8443;
     public static final String ACTION_STOP = "com.nexshare.STOP";
     private static final String CHANNEL = "nexshare";
 
     public static volatile boolean running;
     public static volatile String lastError;
+    public static volatile boolean httpsRunning;
+    public static volatile String httpsError;
+    private static ServerService current;
 
     private final HttpServer[] server = new HttpServer[1];
+    private HttpServer httpsServer;
+    private WebApi api;
     private MdnsResponder mdns;
     private PowerManager.WakeLock wakeLock;
     private WifiManager.WifiLock wifiLock;
@@ -76,13 +82,22 @@ public class ServerService extends Service {
 
     private void startServer() {
         try {
-            HttpServer s = new HttpServer(new WebApi(this, server));
+            api = new WebApi(this, server);
+            HttpServer s = new HttpServer(api);
             server[0] = s;
             s.start(PORT);
+            current = this;
+            startHttps();
             mdns = new MdnsResponder(this);
             mdns.start();
             registerNsd();
             DownloadManager.get(this).startup();
+            final Context app = getApplicationContext();
+            new Thread(new Runnable() {
+                public void run() {
+                    Trash.purgeExpired(app);
+                }
+            }, "trash-purge").start();
             applyStayOn();
             TunnelManager.get(this).restoreIfEnabled();
             PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
@@ -101,6 +116,40 @@ public class ServerService extends Service {
             server[0] = null;
             stopSelf();
         }
+    }
+
+    /** HTTPS listener on {@link #HTTPS_PORT}; failures are reported but never stop plain HTTP. */
+    private synchronized void startHttps() {
+        if (httpsServer != null) {
+            httpsServer.stop();
+            httpsServer = null;
+        }
+        httpsRunning = false;
+        httpsError = null;
+        if (!Settings.httpsEnabled(this) || api == null) return;
+        final WebApi handler = api;
+        // Generating the RSA key takes a moment on first run: do it off the main thread.
+        new Thread(new Runnable() {
+            public void run() {
+                try {
+                    HttpServer hs = new HttpServer(handler, true);
+                    hs.start(HTTPS_PORT, TlsManager.get(ServerService.this).serverSocketFactory());
+                    synchronized (ServerService.this) {
+                        httpsServer = hs;
+                    }
+                    httpsRunning = true;
+                } catch (Exception e) {
+                    httpsError = e.getMessage();
+                    httpsRunning = false;
+                }
+            }
+        }, "https-start").start();
+    }
+
+    /** Re-reads the HTTPS settings/certificate (called from Control Panel). */
+    public static void restartHttps(Context c) {
+        ServerService s = current;
+        if (s != null) s.startHttps();
     }
 
     /** Root edition: keep the physical screen on across the whole device while sharing. */
@@ -141,6 +190,12 @@ public class ServerService extends Service {
         running = false;
         if (server[0] != null) server[0].stop();
         server[0] = null;
+        synchronized (this) {
+            if (httpsServer != null) httpsServer.stop();
+            httpsServer = null;
+        }
+        httpsRunning = false;
+        if (current == this) current = null;
         if (mdns != null) mdns.stop();
         TunnelManager.get(this).stop();
         DownloadManager.get(this).shutdown();

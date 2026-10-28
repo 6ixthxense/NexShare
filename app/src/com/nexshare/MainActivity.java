@@ -2,6 +2,7 @@ package com.nexshare;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
@@ -31,7 +32,8 @@ import java.net.Inet4Address;
 public class MainActivity extends Activity {
 
     private static final int BLUE = 0xFF1E6FD9;
-    private TextView status, urlHost, urlIp, pinView, permNote;
+    private TextView status, urlHost, urlIp, urlHttps, pinView, pinNote, permNote, secState;
+    private Button clearPwBtn, clearTotpBtn;
     private Button toggle, permBtn;
     private Switch pinSwitch;
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -92,6 +94,7 @@ public class MainActivity extends Activity {
         card.addView(text("เปิดจากคอม/มือถือเครื่องอื่นที่ต่อ Wi-Fi เดียวกัน", 13, 0xFF6B7785, false));
         urlHost = link(card);
         urlIp = link(card);
+        urlHttps = link(card);
         TextView hint = text("ถ้าเปิด nexshare.local ไม่ได้ ให้ใช้ลิงก์ที่เป็นเลข IP แทน", 12, 0xFF8A96A3, false);
         hint.setPadding(0, dp(8), 0, 0);
         card.addView(hint);
@@ -111,6 +114,8 @@ public class MainActivity extends Activity {
         pinView.setLetterSpacing(0.15f);
         pinView.setPadding(0, dp(8), 0, dp(4));
         pinCard.addView(pinView);
+        pinNote = text("", 12, 0xFF8A96A3, false);
+        pinCard.addView(pinNote);
         Button newPin = new Button(this);
         newPin.setAllCaps(false);
         newPin.setText("สุ่ม PIN ใหม่");
@@ -119,6 +124,26 @@ public class MainActivity extends Activity {
             refresh();
         });
         pinCard.addView(newPin);
+
+        // Security & recovery: the phone is the way back in if a password or authenticator is lost.
+        LinearLayout secCard = card(body);
+        secCard.addView(text("ความปลอดภัย", 15, 0xFF1D2733, true));
+        secState = text("", 13, 0xFF4A5663, false);
+        secState.setPadding(0, dp(6), 0, dp(6));
+        secCard.addView(secState);
+        clearPwBtn = button(secCard, "ล้างรหัสผ่านผู้ดูแล (กลับไปใช้ PIN)", () -> confirm(
+            "ล้างรหัสผ่านผู้ดูแล?", "ผู้ดูแลจะกลับไปเข้าสู่ระบบด้วย PIN และทุกเครื่องจะถูกออกจากระบบ",
+            () -> Settings.setAdminPassword(this, null)));
+        clearTotpBtn = button(secCard, "ปิดการยืนยันตัวตน 2 ขั้น (2FA)", () -> confirm(
+            "ปิด 2FA?", "ใช้เมื่อทำแอปยืนยันตัวตนหาย สามารถตั้งใหม่ได้ในแผงควบคุมบนเว็บ",
+            () -> Settings.setTotp(this, "", Settings.TOTP_OFF)));
+        button(secCard, "ปลดล็อกการเข้าสู่ระบบที่ถูกระงับ", () -> {
+            Auth.get(this).resetLockouts();
+            Toast.makeText(this, "ปลดล็อกแล้ว ลองเข้าสู่ระบบใหม่ได้ทันที", Toast.LENGTH_SHORT).show();
+        });
+        button(secCard, "ออกจากระบบทุกเครื่อง", () -> confirm(
+            "ออกจากระบบทุกเครื่อง?", "ทุกเบราว์เซอร์ที่เข้าสู่ระบบไว้จะต้องเข้าสู่ระบบใหม่",
+            () -> SessionStore.get(this).revokeAll()));
 
         LinearLayout screenCard = card(body);
         Switch screenSwitch = new Switch(this);
@@ -248,9 +273,37 @@ public class MainActivity extends Activity {
         urlHost.setAlpha(on ? 1f : 0.4f);
         urlIp.setAlpha(on ? 1f : 0.4f);
 
+        if (ServerService.httpsRunning && ip != null) {
+            String https = "https://" + ip.getHostAddress() + ":" + ServerService.HTTPS_PORT;
+            urlHttps.setText(https + "  🔒");
+            urlHttps.setTag(https);
+            urlHttps.setVisibility(View.VISIBLE);
+        } else {
+            urlHttps.setVisibility(View.GONE);
+        }
+        urlHttps.setAlpha(on ? 1f : 0.4f);
+
         boolean pinOn = Settings.pinEnabled(this);
-        pinView.setText(pinOn ? Settings.pin(this) : "ไม่ใช้ PIN");
-        pinView.setTextSize(pinOn ? 34 : 18);
+        boolean hasPw = Settings.hasAdminPassword(this);
+        pinView.setText(hasPw ? "ใช้รหัสผ่าน" : pinOn ? Settings.pin(this) : "ไม่ใช้ PIN");
+        pinView.setTextSize(hasPw || !pinOn ? 18 : 34);
+        String note = hasPw ? "ผู้ดูแลเข้าสู่ระบบด้วยรหัสผ่านที่ตั้งไว้บนเว็บ (PIN ใช้ไม่ได้แล้ว)"
+            : !pinOn && Settings.loginRequired(this) ? "มีบัญชีผู้ใช้อยู่ จึงยังต้องเข้าสู่ระบบเสมอ" : "";
+        if (!pinOn) note = (note.isEmpty() ? "" : note + "\n") + "การเข้าผ่านอินเทอร์เน็ต (Remote Access) ต้องเข้าสู่ระบบเสมอ";
+        pinNote.setText(note);
+        pinNote.setVisibility(note.isEmpty() ? View.GONE : View.VISIBLE);
+
+        String totp = Settings.totpMode(this);
+        StringBuilder sec = new StringBuilder();
+        sec.append(hasPw ? "✓ ตั้งรหัสผ่านผู้ดูแลแล้ว" : "• ผู้ดูแลใช้ PIN 6 หลัก (ตั้งรหัสผ่านได้ในแผงควบคุมบนเว็บ)");
+        sec.append('\n').append(Settings.TOTP_OFF.equals(totp) ? "• ยังไม่เปิด 2FA"
+            : "✓ เปิด 2FA " + (Settings.TOTP_ALWAYS.equals(totp) ? "ทุกการเข้าสู่ระบบ" : "เมื่อเข้าผ่านอินเทอร์เน็ต"));
+        sec.append('\n').append(ServerService.httpsRunning ? "✓ HTTPS พอร์ต " + ServerService.HTTPS_PORT
+            : Settings.httpsEnabled(this) ? "• HTTPS กำลังเริ่ม" + (ServerService.httpsError != null ? " (ผิดพลาด: " + ServerService.httpsError + ")" : "") : "• ปิด HTTPS");
+        sec.append('\n').append("เข้าสู่ระบบค้างไว้ ").append(SessionStore.get(this).count()).append(" เครื่อง");
+        secState.setText(sec.toString());
+        clearPwBtn.setVisibility(hasPw ? View.VISIBLE : View.GONE);
+        clearTotpBtn.setVisibility(Settings.TOTP_OFF.equals(totp) ? View.GONE : View.VISIBLE);
 
         boolean access = hasFileAccess();
         permNote.setText(access ? "✓ ได้รับสิทธิ์เข้าถึงไฟล์แล้ว" : "ยังไม่ได้รับสิทธิ์เข้าถึงไฟล์ หน้าเว็บจะเปิดโฟลเดอร์ไม่ได้");
@@ -284,6 +337,25 @@ public class MainActivity extends Activity {
         });
         parent.addView(t);
         return t;
+    }
+
+    private Button button(LinearLayout parent, String label, final Runnable run) {
+        Button b = new Button(this);
+        b.setAllCaps(false);
+        b.setText(label);
+        b.setOnClickListener(v -> run.run());
+        parent.addView(b);
+        return b;
+    }
+
+    private void confirm(String title, String message, final Runnable action) {
+        new AlertDialog.Builder(this).setTitle(title).setMessage(message)
+            .setPositiveButton("ยืนยัน", (d, w) -> {
+                action.run();
+                refresh();
+                Toast.makeText(this, "เรียบร้อย", Toast.LENGTH_SHORT).show();
+            })
+            .setNegativeButton("ยกเลิก", null).show();
     }
 
     private TextView text(String s, int sp, int color, boolean bold) {

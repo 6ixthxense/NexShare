@@ -58,6 +58,37 @@ root prompt.
   Storage, battery.
 - Reachable at `nexshare.local` via a built-in mDNS responder, with IP fallback.
   Optional 6-digit PIN login.
+- **Share links** — send a file or folder to anyone with a link (`/s/<id>`), with expiry,
+  optional password, QR code and download counter. Works on the LAN and through the tunnel.
+- **Recycle Bin** — deletes go to a per-volume trash and can be restored; auto-purged after
+  30 days (configurable). Shift+Delete deletes permanently.
+- **WebDAV** at `/dav/` — map the phone as a network drive in Windows Explorer, macOS Finder,
+  Linux file managers, VLC, Infuse… (read/write, with the lock emulation Windows/macOS need).
+- **Multiple users** — accounts with roles (read-only / read-write / admin), optionally limited
+  to specific folders. Applies to the web UI, WebDAV and share links.
+- **Backup Station** — back up a folder from your computer to the phone; only new or changed
+  files are sent. Chrome/Edge over HTTPS remember the folder for one-click re-runs.
+- **Installable web app (PWA)** when opened over HTTPS.
+- **Screen Mirror (root)** streams H.264 from `screenrecord` over a WebSocket and decodes it with
+  WebCodecs — much smoother than screenshots (falls back to screenshots when unsupported).
+
+## Security
+
+- **Admin password** can replace the 6-digit PIN; **2FA (TOTP)** can be required always or
+  only for logins through the internet tunnel.
+- **Brute-force protection**: 5 failures lock the client with exponential backoff
+  (1 min → 64 min). Behind the tunnel the real client IP comes from `CF-Connecting-IP`
+  (trusted only from the local cloudflared), and all tunnel failures also share a global budget.
+- **Sessions** survive app restarts; only SHA-256 hashes of tokens are stored. Changing the PIN or
+  password, or removing a user, ends their sessions.
+- **Sudo**: the root terminal, screen control, app installs and security settings ask you to
+  re-enter your PIN/password (valid 10 minutes).
+- **HTTPS** on port 8443 with a self-signed certificate generated on the phone (download it from
+  Control Panel to trust it); optional redirect of HTTP → HTTPS. API calls are checked against
+  `Origin` (CSRF), cookies are `HttpOnly; SameSite=Strict`, and phone-hosted HTML/SVG is served
+  sandboxed so it can't act as the logged-in user.
+- **Recovery**: the phone app can clear the admin password, turn 2FA off, unlock lockouts and log
+  out every browser.
 
 ## Download
 
@@ -70,7 +101,23 @@ Enable "install from unknown sources", install, open the app, grant
 **All files access**, and the server starts. Open the shown URL from another
 device on the same Wi-Fi.
 
-## Build from source (Windows)
+## Build from source
+
+### Linux / macOS / CI
+
+```bash
+./setup.sh           # one-time: Android SDK pieces + libtorrent4j + cloudflared + busybox (needs JDK 17+)
+./build.sh           # both editions into dist/   (./build.sh root|normal for one)
+./test/run-tests.sh  # JVM tests: HTTP server, crypto/TLS, auth, users, trash, share links, WebDAV
+python test/ui/ui_test.py   # browser smoke tests (needs `pip install playwright`)
+```
+
+GitHub Actions (`.github/workflows/build.yml`) runs the tests and builds both APKs on every push;
+tags `v*` attach the APKs to a release. Set the `NEXSHARE_KEYSTORE_B64` and
+`NEXSHARE_KEYSTORE_PASS` secrets so releases are signed with your existing key (otherwise phones
+can't update over the old install).
+
+### Windows
 
 No Android Studio needed — the scripts fetch a private JDK + Android SDK into
 `.tools/` and the libtorrent4j jars into `libs/`.
@@ -90,17 +137,42 @@ keystore is generated on first build and kept in `.tools/` (git-ignored).
 
 ```
 app/AndroidManifest.xml      app manifest (package/label rewritten per edition at build time)
-app/src/com/nexshare/*.java  HTTP server, mDNS, file/download/root APIs, Android glue
-app/assets/web/              the web desktop (index.html, style.css, app.js)
+app/src/com/nexshare/
+  HttpServer.java            HTTP/1.1 server: keep-alive, chunked bodies, TLS, WebSocket
+  WebApi.java                router: HTTPS redirect, CSRF check, login/role/sudo gating
+  Auth, Users, SessionStore  login, rate limiting, 2FA, accounts and sessions
+  FileApi, Trash, Shares     File Station API, recycle bin, public share links
+  WebDav.java                WebDAV server at /dav/
+  SystemApi.java             stats, Control Panel settings, users, tunnel, downloads
+  RootApi.java               root edition: terminal, screen stream, app manager
+  CertGen, TlsManager        self-signed certificate + HTTPS listener
+  Storage, Crypto, Zip       path safety, file streaming, hashing/TOTP/encodings
+app/assets/web/              the web desktop: index.html, style.css, js/*.js, sw.js, manifest
 app/res/                     launcher icon
-build.ps1 / setup.ps1        Gradle-less build + toolchain bootstrap
-libs/                        libtorrent4j jars + cloudflared + busybox (fetched by setup.ps1)
+test/                        JVM unit + integration tests (with Android fakes), browser UI tests
+build.sh / setup.sh          Gradle-less build + toolchain bootstrap (Linux/macOS/CI)
+build.ps1 / setup.ps1        the same for Windows
+libs/                        libtorrent4j jars + cloudflared + busybox (fetched by setup)
 ```
+
+## WebDAV quick start
+
+Address: `http://nexshare.local:8080/dav/` (or `https://<phone-ip>:8443/dav/`). Log in as
+`admin` with the PIN/admin password, or with a user account.
+
+- **Windows**: File Explorer → This PC → *Map network drive*. Windows only sends passwords over
+  plain `http://` if `BasicAuthLevel` is set to 2 in the registry, so prefer the `https://` address
+  (after installing the certificate from Control Panel).
+- **macOS**: Finder → Go → *Connect to Server…* (⌘K).
+- **Linux**: `dav://…` or `davs://…` in your file manager.
+
+WebDAV over the internet is off by default (Control Panel → Services); it uses Basic auth and
+can't ask for a 2FA code.
 
 ## Notes & safety
 
-- `usesCleartextTraffic` is on because the server is plain HTTP on the LAN; keep the
-  PIN enabled on untrusted networks. Routers with AP/client isolation block
+- `usesCleartextTraffic` is on because the server also speaks plain HTTP on the LAN; on
+  untrusted networks keep login on and use HTTPS (Control Panel → Security → Force HTTPS). Routers with AP/client isolation block
   device-to-device access.
 - The Root edition executes shell commands as uid 0 at your request. The terminal,
   app manager and installer act on the device with full privileges — use them as
