@@ -1,0 +1,82 @@
+name: build
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write # attach APKs to releases on version tags
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+      - name: Unit tests (HTTP server, crypto, TLS, path safety)
+        run: ./test/run-tests.sh
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - name: Syntax-check web UI
+        run: for f in app/assets/web/js/*.js app/assets/web/sw.js; do node --check "$f"; done
+
+  ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: Browser smoke tests (headless Chromium + mock backend)
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
+          pip install -q playwright
+          python -m playwright install --with-deps chromium
+          python test/ui/ui_test.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-screenshots
+          path: build/ui/*.png
+
+  apk:
+    needs: [test, ui]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+      - uses: android-actions/setup-android@v3
+        with:
+          # The default ("tools platform-tools") fails: cmdline-tools 16+ no longer has a "tools" package.
+          packages: 'platform-tools'
+      - name: Fetch SDK packages and libraries
+        run: ./setup.sh
+      - name: Signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.NEXSHARE_KEYSTORE_B64 }}
+        run: |
+          # Release builds must be signed with the same key as earlier releases so phones can update.
+          # Store it as base64 in the NEXSHARE_KEYSTORE_B64 / NEXSHARE_KEYSTORE_PASS secrets.
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            echo "NEXSHARE_KEYSTORE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+          else
+            echo "::warning::No NEXSHARE_KEYSTORE_B64 secret — building with a throwaway key (fine for testing, not for releases)."
+          fi
+      - name: Build both editions
+        env:
+          NEXSHARE_KEYSTORE_PASS: ${{ secrets.NEXSHARE_KEYSTORE_PASS }}
+        run: ./build.sh all
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NexShare-apks
+          path: dist/*.apk
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/*.apk --title "$GITHUB_REF_NAME" --generate-notes || gh release upload "$GITHUB_REF_NAME" dist/*.apk --clobber

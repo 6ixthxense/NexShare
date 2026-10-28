@@ -17,6 +17,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -47,6 +48,7 @@ public class RootApi {
             case "/api/root/appicon": appIcon(req, res); return true;
             case "/api/root/install": install(req, res); return true;
             case "/api/root/app": appAction(req, res); return true;
+            case "/api/root/stream": stream(req, res); return true;
             default: res.error(404, "not found"); return true;
         }
     }
@@ -133,15 +135,10 @@ public class RootApi {
             res.error(400, "bad request");
             return;
         }
-        String type = b.optString("type");
-        String cmd;
-        switch (type) {
-            case "tap": cmd = "input tap " + (int) b.optDouble("x") + " " + (int) b.optDouble("y"); break;
-            case "swipe": cmd = "input swipe " + (int) b.optDouble("x1") + " " + (int) b.optDouble("y1") + " "
-                + (int) b.optDouble("x2") + " " + (int) b.optDouble("y2") + " " + b.optInt("ms", 200); break;
-            case "key": cmd = "input keyevent " + Integer.parseInt(b.optString("key").replaceAll("[^0-9]", "")); break;
-            case "text": cmd = "input text " + RootShell.q(b.optString("text").replace(" ", "%s")); break;
-            default: res.error(400, "bad input"); return;
+        String cmd = inputCommand(b);
+        if (cmd == null) {
+            res.error(400, "bad input");
+            return;
         }
         try {
             RootShell.main().exec(cmd, 8000);
@@ -150,6 +147,122 @@ public class RootApi {
             return;
         }
         res.json(200, "{\"ok\":true}");
+    }
+
+    /** Builds an `input` shell command from a tap/swipe/key/text event, or null if invalid. */
+    static String inputCommand(JSONObject b) {
+        try {
+            switch (b.optString("type")) {
+                case "tap": return "input tap " + (int) b.optDouble("x") + " " + (int) b.optDouble("y");
+                case "swipe": return "input swipe " + (int) b.optDouble("x1") + " " + (int) b.optDouble("y1") + " "
+                    + (int) b.optDouble("x2") + " " + (int) b.optDouble("y2") + " " + Math.max(1, Math.min(5000, b.optInt("ms", 200)));
+                case "key": return "input keyevent " + Integer.parseInt(b.optString("key").replaceAll("[^0-9]", ""));
+                case "text": return "input text " + RootShell.q(b.optString("text").replace(" ", "%s"));
+                default: return null;
+            }
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    // ---------- H.264 screen stream over WebSocket ----------
+
+    /**
+     * Streams the screen as raw H.264 (Annex B) from `screenrecord` over a WebSocket; the browser
+     * decodes it with WebCodecs. Far smoother than polling PNG screenshots. The client can also send
+     * tap/swipe/key events as JSON text frames on the same socket.
+     *
+     * screenrecord stops after 3 minutes, so it is restarted in a loop until the socket closes.
+     */
+    private void stream(HttpServer.Request req, HttpServer.Response res) throws IOException {
+        requireRoot();
+        if (req.header("upgrade") == null) {
+            // Plain GET = capability probe (lets the browser run the sudo prompt before opening the socket).
+            res.json(200, "{\"ok\":true}");
+            return;
+        }
+        int max = 1280;
+        try {
+            if (req.param("max") != null) max = Math.max(320, Math.min(1920, Integer.parseInt(req.param("max"))));
+        } catch (NumberFormatException ignored) { }
+        int bitrate = 4000000;
+        try {
+            if (req.param("kbps") != null) bitrate = Math.max(500, Math.min(16000, Integer.parseInt(req.param("kbps")))) * 1000;
+        } catch (NumberFormatException ignored) { }
+        int[] size = displaySize();
+        final HttpServer.WebSocket ws = HttpServer.upgrade(req, res);
+        if (ws == null) return;
+        // Scale to fit `max` on the long side; encoders want even dimensions.
+        double scale = Math.min(1.0, (double) max / Math.max(size[0], size[1]));
+        int w = ((int) Math.round(size[0] * scale)) & ~1, h = ((int) Math.round(size[1] * scale)) & ~1;
+        ws.sendText("{\"type\":\"config\",\"width\":" + w + ",\"height\":" + h + ",\"screenWidth\":" + size[0] + ",\"screenHeight\":" + size[1] + "}");
+
+        final Process[] proc = new Process[1];
+        Thread reader = new Thread(new Runnable() {
+            public void run() {
+                try {
+                    byte[] m;
+                    while ((m = ws.receive()) != null) {
+                        try {
+                            String cmd = inputCommand(new JSONObject(new String(m, "UTF-8")));
+                            if (cmd != null) RootShell.main().exec(cmd, 8000);
+                        } catch (Exception ignored) { }
+                    }
+                } catch (IOException ignored) {
+                } finally {
+                    ws.close();
+                    synchronized (proc) {
+                        if (proc[0] != null) proc[0].destroy();
+                    }
+                }
+            }
+        }, "screen-input");
+        reader.setDaemon(true);
+        reader.start();
+
+        String cmd = "screenrecord --output-format=h264 --size " + w + "x" + h + " --bit-rate " + bitrate + " -";
+        byte[] buf = new byte[64 * 1024];
+        while (!ws.isClosed()) {
+            Process p;
+            try {
+                p = new ProcessBuilder("su", "-c", cmd).redirectErrorStream(false).start();
+            } catch (IOException e) {
+                try { ws.sendText("{\"type\":\"error\",\"message\":" + HttpServer.jsonQuote(e.getMessage()) + "}"); } catch (IOException ignored) { }
+                break;
+            }
+            synchronized (proc) {
+                proc[0] = p;
+            }
+            long started = System.currentTimeMillis();
+            try (InputStream in = p.getInputStream()) {
+                int n;
+                while ((n = in.read(buf)) > 0) ws.sendBinary(buf, 0, n);
+            } catch (IOException e) {
+                break; // client went away
+            } finally {
+                p.destroy();
+            }
+            if (ws.isClosed()) break;
+            if (System.currentTimeMillis() - started < 2000) {
+                // Ended immediately: this device's screenrecord can't stream H.264 to stdout.
+                try { ws.sendText("{\"type\":\"error\",\"message\":\"unsupported\"}"); } catch (IOException ignored) { }
+                break;
+            }
+            try { ws.sendText("{\"type\":\"restart\"}"); } catch (IOException e) { break; }
+        }
+        ws.close();
+    }
+
+    /** Physical display size via `wm size` (honours an override size if one is set). */
+    private static int[] displaySize() {
+        try {
+            String out = RootShell.main().exec("wm size", 8000);
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("(\\d+)x(\\d+)").matcher(out);
+            int[] found = null;
+            while (m.find()) found = new int[]{Integer.parseInt(m.group(1)), Integer.parseInt(m.group(2))};
+            if (found != null) return found; // last match = override size when present
+        } catch (Exception ignored) { }
+        return new int[]{1080, 1920};
     }
 
     // ---------- apps / package manager ----------
