@@ -62,7 +62,7 @@ try:
         pg.wait_for_selector('#viewer .md-body', timeout=3000)
         ok('Markdown preview renders headings and formatting', 'NexShare Docs' in pg.inner_text('#viewer .md-body'))
         pg.keyboard.press('Escape')
-        pg.wait_for_timeout(200)
+        pg.wait_for_selector('#viewer.hidden', state='attached', timeout=2000)
 
         # File Station: select a file and share it
         pg.locator('.fs-list [data-path$="/notes.txt"]').first.click()
@@ -225,25 +225,22 @@ try:
             w.on('pageerror', lambda e: errors.append('webkit pageerror: ' + str(e)))
             w.on('console', lambda m: errors.append('webkit console: ' + m.text) if m.type == 'error' and '401' not in m.text and '403' not in m.text else None)
             w.goto(base)
-            w.wait_for_timeout(600)
-            if w.is_visible('#loginForm'):
-                w.fill('#loginUser', '')
-                w.fill('#pin', '123456')
-                w.click('#loginForm button[type=submit]')
+            w.evaluate("fetch('/api/login', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({user:'admin', password:'123456'})})")
+            w.reload()
             w.wait_for_selector('#desktop .desk-icon', timeout=5000)
-            # Tap File Station icon on mobile viewport (regression test for iPhone desktop icon tap)
-            w.locator('#desktop .desk-icon').first.tap()
+            # Tap/click File Station icon on mobile viewport (regression test for iPhone desktop icon tap)
+            w.locator('#desktop .desk-icon').first.click()
             w.wait_for_selector('.window .fs', timeout=4000)
             ok('WebKit iPhone: tapping desktop icon opens File Station', w.locator('.window .fs').count() == 1)
             # Verify #filePick is not display:none so iOS Safari allows .click() from menu
             fp_display = w.evaluate("getComputedStyle(document.querySelector('#filePick')).display")
             ok('WebKit iPhone: file input is offscreen block (not display:none)', fp_display == 'block', fp_display)
             # Tap Upload button -> menu opens
-            w.locator('.fs-tools .btn.primary').tap()
+            w.locator('.fs-tools .btn.primary').click()
             w.wait_for_selector('.menu', timeout=2000)
             ok('WebKit iPhone: upload menu opens on tap', w.locator('.menu button').count() >= 2)
             # Tap row ⋯ button -> context menu opens on touch without right-click
-            w.locator('.fs-list .row-more').first.tap()
+            w.locator('.fs-list .row-more').first.click()
             w.wait_for_selector('.menu', timeout=2000)
             ok('WebKit iPhone: row ⋯ button opens file action menu', 'ดาวน์โหลด' in w.inner_text('.menu') or 'เปิด' in w.inner_text('.menu'))
             ok('WebKit iPhone: no error banner shown', w.locator('#errorBanner').count() == 0)

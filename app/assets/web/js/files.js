@@ -46,7 +46,7 @@ function FileStation(body, win) {
   const viewGrid = el('button', { class: 'icon-btn', title: 'มุมมองไอคอน', onclick: () => setView('grid') }, icon('grid'));
   const hidBtn = el('button', { class: 'icon-btn hide-sm', title: 'แสดงไฟล์ซ่อน', onclick: () => { st.hidden = !st.hidden; store.set('hidden', st.hidden); render(); } }, icon('eye'));
   const shareBtn = el('button', {
-    class: 'btn hide-sm', title: 'สร้างลิงก์แชร์ / ขอไฟล์',
+    class: 'btn hide-sm', title: 'สร้างลิงก์แชร์',
     onclick: e => {
       const s = selected();
       if (s.length === 1) {
