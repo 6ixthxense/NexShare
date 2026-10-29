@@ -131,6 +131,22 @@ public class HttpServer {
         return ip != null && (ip.startsWith("127.") || ip.equals("::1") || ip.equals("0:0:0:0:0:0:0:1"));
     }
 
+    /** Text-like types worth gzipping (images, video, archives are already compressed). */
+    static boolean compressible(String type) {
+        if (type == null) return false;
+        String t = type.toLowerCase(Locale.ROOT);
+        return t.startsWith("text/") || t.contains("json") || t.contains("javascript") || t.contains("xml") || t.contains("svg")
+            || t.contains("webmanifest");
+    }
+
+    static byte[] gzip(byte[] data) throws IOException {
+        ByteArrayOutputStream bo = new ByteArrayOutputStream(data.length / 3 + 64);
+        try (java.util.zip.GZIPOutputStream gz = new java.util.zip.GZIPOutputStream(bo, 8192)) {
+            gz.write(data);
+        }
+        return bo.toByteArray();
+    }
+
     public static class Response {
         final OutputStream out;
         boolean keepAlive;
@@ -138,6 +154,10 @@ public class HttpServer {
         boolean upgraded;
         final Map<String, String> extra = new LinkedHashMap<>();
         final List<String> cookies = new ArrayList<>();
+        /** Client sent Accept-Encoding: gzip. */
+        boolean gzipOk;
+        /** When handling started (for Server-Timing); 0 = unknown. */
+        long startNanos;
 
         Response(OutputStream out, boolean keepAlive) {
             this.out = out;
@@ -164,6 +184,10 @@ public class HttpServer {
             if (type != null) sb.append("Content-Type: ").append(type).append("\r\n");
             if (length >= 0) sb.append("Content-Length: ").append(length).append("\r\n");
             sb.append("Connection: ").append(keepAlive ? "keep-alive" : "close").append("\r\n");
+            if (startNanos > 0) {
+                long us = (System.nanoTime() - startNanos) / 1000;
+                sb.append("Server-Timing: app;dur=").append(us / 1000).append('.').append(String.format(Locale.ROOT, "%03d", us % 1000)).append("\r\n");
+            }
             for (Map.Entry<String, String> e : extra.entrySet())
                 sb.append(e.getKey()).append(": ").append(e.getValue()).append("\r\n");
             for (String c : cookies) sb.append("Set-Cookie: ").append(c).append("\r\n");
@@ -173,6 +197,11 @@ public class HttpServer {
         }
 
         public void bytes(int code, String type, byte[] data) throws IOException {
+            if (gzipOk && data.length >= 1024 && compressible(type) && !extra.containsKey("Content-Encoding")) {
+                data = gzip(data);
+                header("Content-Encoding", "gzip");
+                header("Vary", "Accept-Encoding");
+            }
             begin(code, type, data.length);
             out.write(data);
         }
@@ -675,6 +704,9 @@ public class HttpServer {
                 }
                 boolean keep = parts[2].equals("HTTP/1.1") && !"close".equalsIgnoreCase(req.header("connection"));
                 Response res = new Response(out, keep);
+                String ae = req.header("accept-encoding");
+                res.gzipOk = ae != null && ae.toLowerCase(Locale.ROOT).contains("gzip");
+                res.startNanos = System.nanoTime();
                 try {
                     handler.handle(req, res);
                 } catch (SecurityException e) {

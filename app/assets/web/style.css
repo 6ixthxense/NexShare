@@ -356,6 +356,51 @@ tr.hidden-file td { opacity: .6; }
 .dialog .d-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 20px 16px; }
 #toasts { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 9500; display: flex; flex-direction: column; gap: 8px; align-items: center; }
 .toast { background: rgba(29,39,51,.94); color: #fff; padding: 10px 16px; border-radius: 9px; font-size: 13px; box-shadow: 0 6px 20px rgba(0,0,0,.25); animation: winIn .15s; }
+.toast.toast-action { display: flex; align-items: center; gap: 12px; }
+.btn-undo {
+  background: #3b82f6; color: #fff; border: none; border-radius: 6px;
+  padding: 4px 12px; font-size: 12px; font-weight: 600; cursor: pointer; transition: background .15s;
+}
+.btn-undo:hover { background: #2563eb; }
+
+/* ---------- skeleton loading ---------- */
+@keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+.skeleton {
+  background: linear-gradient(90deg, rgba(130,130,130,0.08) 25%, rgba(130,130,130,0.18) 50%, rgba(130,130,130,0.08) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s infinite;
+  border-radius: 6px;
+}
+.skeleton-row { height: 26px; margin: 8px 14px; }
+.skeleton-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: 12px; padding: 14px; }
+.skeleton-card { height: 96px; }
+
+/* ---------- command palette (Ctrl+K) ---------- */
+.cmd-palette-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,.45); backdrop-filter: blur(4px);
+  z-index: 9990; display: flex; justify-content: center; padding-top: 14vh;
+}
+.cmd-box {
+  width: min(540px, calc(100% - 32px)); max-height: 420px; background: #ffffff;
+  border: 1px solid #d1d9e2; border-radius: 14px; box-shadow: 0 16px 48px rgba(0,0,0,.28);
+  display: flex; flex-direction: column; overflow: hidden; animation: winIn .15s ease-out;
+}
+[data-theme=dark] .cmd-box { background: #1e2631; border-color: #344354; color: #fff; }
+.cmd-input {
+  width: 100%; padding: 14px 18px; font-size: 15px; border: none; border-bottom: 1px solid #e2e8f0;
+  background: transparent; color: inherit; outline: none;
+}
+[data-theme=dark] .cmd-input { border-bottom-color: #2b394a; }
+.cmd-list { overflow-y: auto; max-height: 340px; padding: 6px; }
+.cmd-item {
+  display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-radius: 8px; cursor: pointer;
+  transition: background .12s;
+}
+.cmd-item:hover, .cmd-item.active { background: rgba(30,111,217,.12); color: #1e6fd9; }
+.cmd-item .app-ico { width: 28px; height: 28px; flex-shrink: 0; }
+.cmd-lbl { display: flex; flex-direction: column; gap: 2px; }
+.cmd-lbl small { color: #64748b; font-size: 11px; }
+.cmd-empty { padding: 24px; text-align: center; color: #888; font-size: 14px; }
 
 /* ---------- login ---------- */
 #login { position: fixed; inset: 0; z-index: 9999; display: grid; place-items: center; }
