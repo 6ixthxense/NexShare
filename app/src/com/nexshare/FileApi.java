@@ -583,7 +583,7 @@ final class FileApi {
             File f = Storage.resolve(ctx, u, p);
             if (f.exists()) {
                 items.add(f);
-                estBytes += Storage.sizeRec(f, 0);
+                estBytes += Storage.sizeRec(f, 0, false);
             }
         }
         if (items.isEmpty()) {
@@ -689,7 +689,7 @@ final class FileApi {
             if (dst.getPath().equals(src.getPath())
                     || dst.getPath().startsWith(src.getPath() + File.separator)
                     || dst.getPath().startsWith(src.getPath() + "/")) continue;
-            if (!move && Storage.exceedsQuota(ctx, u, Storage.sizeRec(src, 0))) {
+            if (!move && Storage.exceedsQuota(ctx, u, Storage.sizeRec(src, 0, false))) {
                 res.error(507, "quota_exceeded");
                 return;
             }
