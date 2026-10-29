@@ -141,6 +141,9 @@ class H(BaseHTTPRequestHandler):
                 return self.send(403, {'error': 'not allowed for this user'})
             ents = [entry(path, *e) for e in FILES.get(path, [])]
             return self.send(200, {'path': path, 'parent': None if path == ROOT else path.rsplit('/', 1)[0], 'writable': role != 'ro', 'entries': ents})
+        if a == 'thumb':
+            tall_svg = b'<svg xmlns="http://www.w3.org/2000/svg" width="120" height="240"><rect width="120" height="240" fill="#3b8ef3"/></svg>'
+            return self.send(200, ctype='image/svg+xml', body=tall_svg)
         if a == 'file':
             path = q.get('path', [''])[0]
             if path.endswith('readme.md'):
