@@ -166,7 +166,7 @@ final class FileApi {
         if (limit > 0 || offset > 0) {
             paged = new JSONArray();
             for (int i = offset; i < total && (limit <= 0 || paged.length() < limit); i++) {
-                paged.put(arr.get(i));
+                paged.put(arr.opt(i));
             }
         }
         JSONObject o = new JSONObject();
