@@ -340,17 +340,7 @@ const Viewer = {
     } else if (k === 'audio') {
       this.body.append(el('div', { class: 'v-info' }, fileIcon('audio'), el('audio', { src: url, controls: true, autoplay: true })));
     } else if (k === 'pdf') {
-      const wrap = el('div', { style: { display: 'flex', flexDirection: 'column', width: '100%', height: '100%' } },
-        el('div', { class: 'doc-bar' },
-          el('span', { class: 'muted', text: 'เอกสาร PDF' }),
-          el('div', { style: { display: 'flex', gap: '8px' } },
-            el('a', { class: 'btn sm', href: url, target: '_blank', rel: 'noopener', style: { textDecoration: 'none' }, text: 'เปิดเต็มจอ / แท็บใหม่' }),
-            el('a', { class: 'btn sm primary', href: fileUrl(e.path, true), style: { textDecoration: 'none' }, text: 'ดาวน์โหลด' })
-          )
-        ),
-        el('iframe', { src: url, style: { flex: 1, width: '100%', border: 0 } })
-      );
-      this.body.append(wrap);
+      this.body.append(el('iframe', { class: 'pdf-frame', src: url + '#navpanes=0', title: e.name }));
     } else if ((k === 'doc' || k === 'sheet' || k === 'slide') && ['docx', 'xlsx', 'pptx'].includes(ext) && e.size < 30 * 1024 * 1024) {
       const loading = el('div', { class: 'v-info', text: 'กำลังอ่านเอกสาร Office…' });
       this.body.append(loading);

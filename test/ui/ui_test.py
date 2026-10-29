@@ -64,6 +64,36 @@ try:
         pg.keyboard.press('Escape')
         pg.wait_for_selector('#viewer.hidden', state='attached', timeout=2000)
 
+        # Grid view tall thumbnail bounds check (must not overflow .pic or overlap .nm)
+        pg.locator('.fs-list [data-path$="/DCIM"]').first.dblclick()
+        pg.wait_for_selector('.fs-list [data-path$="/a.jpg"]', timeout=3000)
+        pg.locator('.fs-tools button[title="มุมมองไอคอน"]').click()
+        pg.wait_for_selector('.grid-files .gf .pic img', timeout=3000)
+        pg.wait_for_timeout(200)
+        box_ok = pg.evaluate("""() => {
+          const pic = document.querySelector('.grid-files .gf .pic').getBoundingClientRect();
+          const img = document.querySelector('.grid-files .gf .pic img').getBoundingClientRect();
+          const nm = document.querySelector('.grid-files .gf .nm').getBoundingClientRect();
+          return pic.height <= 79 && img.height <= pic.height + 0.5 && img.bottom <= nm.top + 0.5;
+        }""")
+        ok('grid view constrains tall thumbnail within frame without overlapping filename', box_ok)
+        pg.locator('.fs-tools button[title="มุมมองรายการ"]').click()
+        pg.locator('.fs-nav button[title="โฟลเดอร์แม่"]').click()
+        pg.wait_for_selector('.fs-list [data-path$="/notes.txt"]', timeout=3000)
+
+        # PDF preview test (single clean iframe without duplicate doc-bar or open navpanes)
+        pg.locator('.fs-list [data-path$="/Documents"]').first.dblclick()
+        pg.wait_for_selector('.fs-list [data-path$="/report.pdf"]', timeout=3000)
+        pg.locator('.fs-list [data-path$="/report.pdf"]').first.dblclick()
+        pg.wait_for_selector('#viewer iframe.pdf-frame', timeout=3000)
+        pdf_src = pg.get_attribute('#viewer iframe.pdf-frame', 'src') or ''
+        ok('PDF preview uses single iframe with navpanes=0 and no extra doc-bar',
+           '#navpanes=0' in pdf_src and pg.locator('#viewer .doc-bar').count() == 0, pdf_src)
+        pg.keyboard.press('Escape')
+        pg.wait_for_selector('#viewer.hidden', state='attached', timeout=2000)
+        pg.locator('.fs-nav button[title="โฟลเดอร์แม่"]').click()
+        pg.wait_for_selector('.fs-list [data-path$="/notes.txt"]', timeout=3000)
+
         # File Station: select a file and share it
         pg.locator('.fs-list [data-path$="/notes.txt"]').first.click()
         pg.locator('.fs-tools button[title="สร้างลิงก์แชร์"]').click()
