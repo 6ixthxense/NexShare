@@ -57,3 +57,4 @@ echo "$REDIRECT" | grep -qi "301 Moved Permanently"
 echo "$REDIRECT" | grep -qi "Location: https://127.0.0.1:8443/"
 
 echo "== Android Emulator end-to-end HTTP + HTTPS checks passed!"
+

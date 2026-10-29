@@ -50,6 +50,11 @@ final class FileApi {
                 return true;
             }
             case "/api/thumb": thumb(req, res, u); return true;
+            case "/api/exif": exif(req, res, u); return true;
+            case "/api/events": events(req, res); return true;
+            case "/api/clipboard":
+            case "/api/clipboard/clear": clipboard(req, res, u); return true;
+            case "/api/storage/analyze": storageAnalyze(req, res, u); return true;
             case "/api/zip": zip(req, res, u); return true;
             case "/api/trash/list": trashList(res, u); return true;
             case "/api/share/list": res.json(200, wrap("shares", Shares.get(ctx).list(u))); return true;
@@ -63,6 +68,9 @@ final class FileApi {
         switch (req.path) {
             case "/api/upload/status": uploadStatus(req, res, u); return true;
             case "/api/upload": upload(req, res, u); return true;
+            case "/api/write": writeFile(req, res, u); return true;
+            case "/api/unzip": unzip(req, res, u); return true;
+            case "/api/zip/save": zipSave(req, res, u); return true;
             case "/api/mkdir": mkdir(req, res, u); return true;
             case "/api/rename": rename(req, res, u); return true;
             case "/api/delete": delete(req, res, u); return true;
@@ -90,6 +98,7 @@ final class FileApi {
     }
 
     private static final List<String> WRITE_ROUTES = java.util.Arrays.asList(
+        "/api/write", "/api/unzip", "/api/zip/save",
         "/api/mkdir", "/api/rename", "/api/delete", "/api/move", "/api/copy", "/api/exists",
         "/api/trash/restore", "/api/trash/purge", "/api/trash/empty", "/api/share/create", "/api/share/delete");
 
@@ -231,6 +240,57 @@ final class FileApi {
         res.bytes(200, "image/jpeg", data);
     }
 
+    /** GET /api/exif?path=... — returns image dimensions and EXIF camera/GPS metadata. */
+    private void exif(HttpServer.Request req, HttpServer.Response res, Users.User u) throws IOException {
+        File f = Storage.resolve(ctx, u, req.param("path"));
+        if (!f.isFile()) {
+            res.error(404, "not found");
+            return;
+        }
+        JSONObject o = Storage.entry(f);
+        try {
+            Class<?> optsCls = Class.forName("android.graphics.BitmapFactory$Options");
+            Class<?> bfCls = Class.forName("android.graphics.BitmapFactory");
+            Object opts = optsCls.getDeclaredConstructor().newInstance();
+            optsCls.getField("inJustDecodeBounds").setBoolean(opts, true);
+            bfCls.getMethod("decodeFile", String.class, optsCls).invoke(null, f.getPath(), opts);
+            int w = optsCls.getField("outWidth").getInt(opts);
+            int h = optsCls.getField("outHeight").getInt(opts);
+            if (w > 0 && h > 0) {
+                put(o, "width", w);
+                put(o, "height", h);
+            }
+        } catch (Throwable ignored) { }
+        try {
+            Class<?> exifCls = Class.forName("android.media.ExifInterface");
+            Object ex = exifCls.getConstructor(String.class).newInstance(f.getPath());
+            java.lang.reflect.Method getAttr = exifCls.getMethod("getAttribute", String.class);
+            String[][] tags = new String[][]{
+                {"Make", "make"}, {"Model", "model"}, {"DateTimeOriginal", "dateTaken"},
+                {"DateTime", "dateTime"}, {"ISOSpeedRatings", "iso"}, {"ExposureTime", "exposure"},
+                {"FNumber", "aperture"}, {"FocalLength", "focalLength"}, {"Orientation", "orientation"},
+                {"ImageWidth", "exifWidth"}, {"ImageLength", "exifHeight"}
+            };
+            for (String[] kv : tags) {
+                Object val = getAttr.invoke(ex, kv[0]);
+                if (val != null && !String.valueOf(val).trim().isEmpty()) {
+                    put(o, kv[1], String.valueOf(val).trim());
+                }
+            }
+            if (!o.has("width") && o.optInt("exifWidth") > 0) {
+                put(o, "width", o.optInt("exifWidth"));
+                put(o, "height", o.optInt("exifHeight"));
+            }
+            float[] latLong = new float[2];
+            java.lang.reflect.Method getLatLong = exifCls.getMethod("getLatLong", float[].class);
+            if (Boolean.TRUE.equals(getLatLong.invoke(ex, (Object) latLong))) {
+                put(o, "lat", (double) latLong[0]);
+                put(o, "lon", (double) latLong[1]);
+            }
+        } catch (Throwable ignored) { }
+        res.json(200, o.toString());
+    }
+
     private void zip(HttpServer.Request req, HttpServer.Response res, Users.User u) throws IOException {
         List<File> items = new ArrayList<>();
         for (String p : req.params("p")) items.add(Storage.resolve(ctx, u, p));
@@ -358,6 +418,7 @@ final class FileApi {
                 target.setLastModified(Long.parseLong(lm));
             } catch (NumberFormatException ignored) { }
             AuditLog.log(ctx, req, "upload", u.name, target.getPath());
+            LiveEvents.publish("upload", target.getParent(), target.getName());
             JSONObject entry = Storage.entry(target);
             put(entry, "offset", target.length());
             res.json(200, entry.toString());
@@ -373,7 +434,182 @@ final class FileApi {
             target.setLastModified(Long.parseLong(lm));
         } catch (NumberFormatException ignored) { }
         AuditLog.log(ctx, req, "upload", u.name, target.getPath());
+        LiveEvents.publish("upload", target.getParent(), target.getName());
         res.json(200, Storage.entry(target).toString());
+    }
+
+    /**
+     * POST /api/write — creates or updates a text/markdown/code file directly from the browser editor.
+     * Supports either query params (?path=...&name=...) with raw body or JSON {path, name?, content, create?}.
+     */
+    private void writeFile(HttpServer.Request req, HttpServer.Response res, Users.User u) throws IOException {
+        if (!"POST".equals(req.method) && !"PUT".equals(req.method)) {
+            res.error(400, "use POST");
+            return;
+        }
+        String pathParam = req.param("path");
+        String nameParam = req.param("name");
+        boolean createOnly = "1".equals(req.param("create"));
+        byte[] contentBytes;
+        if (pathParam == null) {
+            try {
+                JSONObject b = new JSONObject(req.bodyString(8 << 20));
+                pathParam = b.optString("path", null);
+                nameParam = b.optString("name", null);
+                createOnly = b.optBoolean("create", false);
+                contentBytes = b.optString("content", "").getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            } catch (Exception e) {
+                res.error(400, "bad request");
+                return;
+            }
+        } else {
+            contentBytes = req.bodyBytes(8 << 20);
+        }
+        File base = Storage.resolve(ctx, u, pathParam);
+        File target;
+        if (nameParam != null && !nameParam.trim().isEmpty()) {
+            if (!base.isDirectory()) {
+                res.error(400, "not a folder");
+                return;
+            }
+            String clean = Storage.cleanName(nameParam);
+            if (clean == null) {
+                res.error(400, "bad name");
+                return;
+            }
+            target = new File(base, clean);
+            if (createOnly && target.exists()) {
+                res.error(409, "exists");
+                return;
+            }
+        } else {
+            if (base.isDirectory()) {
+                res.error(400, "cannot overwrite folder");
+                return;
+            }
+            target = base;
+        }
+        if (!u.allows(target) || (target.getParentFile() != null && !u.allows(target.getParentFile()))) {
+            res.error(403, "not allowed");
+            return;
+        }
+        long existingLen = target.isFile() ? target.length() : 0L;
+        long delta = Math.max(0L, contentBytes.length - existingLen);
+        if (Storage.exceedsQuota(ctx, u, delta)) {
+            res.error(507, "quota_exceeded");
+            return;
+        }
+        try (java.io.FileOutputStream fout = new java.io.FileOutputStream(target)) {
+            fout.write(contentBytes);
+        }
+        AuditLog.log(ctx, req, "write", u.name, target.getPath());
+        LiveEvents.publish("write", target.getParent(), target.getName());
+        res.json(200, Storage.entry(target).toString());
+    }
+
+    /** POST /api/unzip?path=<zipPath>&dst=<optionalDestDir> — extracts a .zip file in-place on the phone. */
+    private void unzip(HttpServer.Request req, HttpServer.Response res, Users.User u) throws IOException {
+        String zipPath = req.param("path");
+        String dstPath = req.param("dst");
+        if (zipPath == null) {
+            try {
+                JSONObject b = new JSONObject(req.bodyString(65536));
+                zipPath = b.optString("path", null);
+                dstPath = b.optString("dst", null);
+            } catch (Exception ignored) { }
+        }
+        File zipFile = Storage.resolve(ctx, u, zipPath);
+        if (!zipFile.isFile()) {
+            res.error(404, "zip file not found");
+            return;
+        }
+        File destDir;
+        if (dstPath != null && !dstPath.trim().isEmpty()) {
+            destDir = writableDir(u, dstPath);
+        } else {
+            String baseName = zipFile.getName().replaceAll("(?i)\\.zip$", "");
+            if (baseName.isEmpty()) baseName = "extracted";
+            destDir = Storage.uniqueFile(zipFile.getParentFile(), baseName);
+        }
+        if (!u.allows(destDir)) {
+            res.error(403, "not allowed");
+            return;
+        }
+        long maxExtractBytes = 2L * 1024 * 1024 * 1024; // 2 GB safety cap
+        if (u.quotaBytes > 0) {
+            long rem = u.quotaBytes - Storage.userUsedBytes(ctx, u);
+            if (rem <= 0) {
+                res.error(507, "quota_exceeded");
+                return;
+            }
+            maxExtractBytes = Math.min(maxExtractBytes, rem);
+        }
+        int count;
+        try {
+            count = Zip.extract(zipFile, destDir, maxExtractBytes);
+        } catch (IOException e) {
+            if ("quota_exceeded".equals(e.getMessage())) {
+                res.error(507, "quota_exceeded");
+                return;
+            }
+            throw e;
+        }
+        AuditLog.log(ctx, req, "unzip", u.name, zipFile.getName() + " -> " + destDir.getPath() + " (" + count + ")");
+        LiveEvents.publish("unzip", destDir.getParent(), destDir.getName());
+        JSONObject out = new JSONObject();
+        put(out, "extracted", count);
+        put(out, "path", destDir.getPath());
+        put(out, "name", destDir.getName());
+        res.json(200, out.toString());
+    }
+
+    /** POST /api/zip/save — compresses selected files/folders into a .zip archive stored in the destination folder. */
+    private void zipSave(HttpServer.Request req, HttpServer.Response res, Users.User u) throws IOException {
+        List<String> paths = new ArrayList<>(req.params("p"));
+        String dstParam = req.param("dst");
+        String nameParam = req.param("name");
+        if (paths.isEmpty()) {
+            try {
+                JSONObject b = new JSONObject(req.bodyString(1 << 16));
+                dstParam = b.optString("dst", dstParam);
+                nameParam = b.optString("name", nameParam);
+                JSONArray arr = b.optJSONArray("p");
+                for (int i = 0; arr != null && i < arr.length(); i++) paths.add(arr.optString(i));
+            } catch (Exception ignored) { }
+        }
+        List<File> items = new ArrayList<>();
+        long estBytes = 0;
+        for (String p : paths) {
+            File f = Storage.resolve(ctx, u, p);
+            if (f.exists()) {
+                items.add(f);
+                estBytes += Storage.sizeRec(f, 0);
+            }
+        }
+        if (items.isEmpty()) {
+            res.error(400, "nothing selected");
+            return;
+        }
+        File dstDir = dstParam != null && !dstParam.isEmpty() ? writableDir(u, dstParam) : items.get(0).getParentFile();
+        if (dstDir == null || !dstDir.isDirectory() || !u.allows(dstDir)) {
+            res.error(400, "bad destination");
+            return;
+        }
+        if (Storage.exceedsQuota(ctx, u, Math.max(4096L, estBytes / 2))) {
+            res.error(507, "quota_exceeded");
+            return;
+        }
+        String baseName = Storage.cleanName(nameParam);
+        if (baseName == null || baseName.isEmpty()) {
+            baseName = (items.size() == 1 ? items.get(0).getName() : "Archive") + ".zip";
+        } else if (!baseName.toLowerCase(Locale.ROOT).endsWith(".zip")) {
+            baseName = baseName + ".zip";
+        }
+        File targetZip = Storage.uniqueFile(dstDir, baseName);
+        Zip.compressToFile(items, targetZip);
+        AuditLog.log(ctx, req, "zip_save", u.name, targetZip.getPath());
+        LiveEvents.publish("zip_save", dstDir.getPath(), targetZip.getName());
+        res.json(200, Storage.entry(targetZip).toString());
     }
 
     private void mkdir(HttpServer.Request req, HttpServer.Response res, Users.User u) throws IOException {
@@ -393,6 +629,7 @@ final class FileApi {
             return;
         }
         AuditLog.log(ctx, req, "mkdir", u.name, nd.getPath());
+        LiveEvents.publish("mkdir", dir.getPath(), nd.getName());
         res.json(200, Storage.entry(nd).toString());
     }
 
@@ -413,6 +650,7 @@ final class FileApi {
             return;
         }
         AuditLog.log(ctx, req, "rename", u.name, f.getName() + " -> " + nf.getName());
+        LiveEvents.publish("rename", nf.getParent(), nf.getName());
         res.json(200, Storage.entry(nf).toString());
     }
 
@@ -420,14 +658,17 @@ final class FileApi {
     private void delete(HttpServer.Request req, HttpServer.Response res, Users.User u) throws IOException {
         boolean permanent = "1".equals(req.param("permanent"));
         int n = 0;
+        String lastParent = "";
         for (String p : req.params("p")) {
             File f = Storage.resolve(ctx, u, p);
             if (Storage.isRoot(ctx, f) || !u.allows(f.getParentFile())) continue;
             if (Trash.delete(ctx, f, u.name, permanent)) {
                 n++;
+                lastParent = f.getParent();
                 AuditLog.log(ctx, req, "delete", u.name, f.getPath());
             }
         }
+        if (n > 0) LiveEvents.publish("delete", lastParent, String.valueOf(n));
         JSONObject o = new JSONObject();
         put(o, "deleted", n);
         put(o, "trash", !permanent && Settings.trashEnabled(ctx));
@@ -459,6 +700,7 @@ final class FileApi {
                 AuditLog.log(ctx, req, move ? "move" : "copy", u.name, src.getName() + " -> " + target.getPath());
             }
         }
+        if (n > 0) LiveEvents.publish(move ? "move" : "copy", dst.getPath(), String.valueOf(n));
         res.json(200, "{\"done\":" + n + "}");
     }
 
@@ -564,8 +806,212 @@ final class FileApi {
             return;
         }
         String label = b.optString("label", "");
-        JSONObject created = Shares.get(ctx).create(f, u.name, expires, pw, mode, label);
+        int maxHits = Math.max(0, b.optInt("maxHits", 0));
+        long maxSizeMb = Math.max(0L, b.optLong("maxSizeMb", 0L));
+        long maxBytes = maxSizeMb > 0 ? maxSizeMb * 1024L * 1024L : b.optLong("maxBytes", 0L);
+        JSONObject created = Shares.get(ctx).create(f, u.name, expires, pw, mode, label, maxHits, maxBytes);
         AuditLog.log(ctx, req, "share_create", u.name, mode + ":" + f.getPath() + " (" + created.optString("id") + ")");
         res.json(200, created.toString());
+    }
+
+    // ---------------------------------------------------------------- live events & clipboard
+
+    private void events(HttpServer.Request req, HttpServer.Response res) throws IOException {
+        long since = 0;
+        if (req.param("since") != null) {
+            try { since = Long.parseLong(req.param("since")); } catch (NumberFormatException ignored) { }
+        }
+        JSONObject out = new JSONObject();
+        put(out, "seq", LiveEvents.latestSeq());
+        put(out, "events", LiveEvents.since(since));
+        res.json(200, out.toString());
+    }
+
+    private void clipboard(HttpServer.Request req, HttpServer.Response res, Users.User u) throws IOException {
+        android.content.SharedPreferences prefs = ctx.getSharedPreferences("nexshare_clip", Context.MODE_PRIVATE);
+        if (req.path.equals("/api/clipboard/clear") && "POST".equals(req.method)) {
+            if (!u.canWrite()) {
+                res.error(403, "read_only");
+                return;
+            }
+            prefs.edit().remove("items").remove("current").apply();
+            LiveEvents.publish("clipboard", "", "");
+            res.json(200, "{\"ok\":true,\"current\":\"\",\"items\":[]}");
+            return;
+        }
+        if ("POST".equals(req.method)) {
+            if (!u.canWrite()) {
+                res.error(403, "read_only");
+                return;
+            }
+            JSONObject b;
+            try {
+                b = new JSONObject(req.bodyString(1 << 20));
+            } catch (Exception e) {
+                res.error(400, "bad request");
+                return;
+            }
+            String text = b.optString("text", "").trim();
+            if (text.isEmpty()) {
+                res.error(400, "empty text");
+                return;
+            }
+            if (text.length() > 65536) text = text.substring(0, 65536);
+            JSONArray next = new JSONArray();
+            JSONObject item = new JSONObject();
+            put(item, "text", text);
+            put(item, "ts", System.currentTimeMillis());
+            put(item, "by", u.name);
+            next.put(item);
+            try {
+                JSONArray old = new JSONArray(prefs.getString("items", "[]"));
+                for (int i = 0; i < old.length() && next.length() < 20; i++) {
+                    JSONObject prev = old.optJSONObject(i);
+                    if (prev != null && !text.equals(prev.optString("text"))) next.put(prev);
+                }
+            } catch (Exception ignored) { }
+            prefs.edit().putString("current", text).putString("items", next.toString()).apply();
+            copyToSystemClipboard(text);
+            AuditLog.log(ctx, req, "clipboard", u.name, text.length() > 60 ? text.substring(0, 60) + "…" : text);
+            LiveEvents.publish("clipboard", "", text.length() > 80 ? text.substring(0, 80) + "…" : text);
+        }
+        String current = prefs.getString("current", "");
+        JSONArray items;
+        try {
+            items = new JSONArray(prefs.getString("items", "[]"));
+        } catch (Exception e) {
+            items = new JSONArray();
+        }
+        JSONObject out = new JSONObject();
+        put(out, "current", current);
+        put(out, "items", items);
+        res.json(200, out.toString());
+    }
+
+    private void copyToSystemClipboard(final String text) {
+        try {
+            Class<?> cmCls = Class.forName("android.content.ClipboardManager");
+            Class<?> cdCls = Class.forName("android.content.ClipData");
+            Object cm = Context.class.getMethod("getSystemService", String.class).invoke(ctx, "clipboard");
+            if (cm != null) {
+                Object clip = cdCls.getMethod("newPlainText", CharSequence.class, CharSequence.class).invoke(null, "NexShare", text);
+                cmCls.getMethod("setPrimaryClip", cdCls).invoke(cm, clip);
+            }
+        } catch (Throwable ignored) { }
+    }
+
+    // ---------------------------------------------------------------- storage analyzer
+
+    private void storageAnalyze(HttpServer.Request req, HttpServer.Response res, Users.User u) throws IOException {
+        File root;
+        String pathParam = req.param("path");
+        if (pathParam != null && !pathParam.isEmpty()) {
+            root = Storage.resolveBrowse(ctx, u, pathParam);
+        } else if (!u.folders.isEmpty()) {
+            root = new File(u.folders.get(0)).getCanonicalFile();
+        } else {
+            root = Environment.getExternalStorageDirectory().getCanonicalFile();
+        }
+        long[] catBytes = new long[7]; // 0:video, 1:image, 2:audio, 3:archive, 4:doc, 5:apk, 6:other
+        int[] catCounts = new int[7];
+        List<File> largest = new ArrayList<>();
+        File[] topKids = root.listFiles();
+        JSONArray foldersArr = new JSONArray();
+        List<JSONObject> folderObjs = new ArrayList<>();
+        if (topKids != null) {
+            for (File k : topKids) {
+                if (k.getName().equals(Storage.TRASH_DIR) || k.getName().endsWith(".nexpart")) continue;
+                if (!u.folders.isEmpty() && !u.allows(k) && !u.canTraverse(k)) continue;
+                if (k.isDirectory()) {
+                    long fSize = scanAnalyzer(k, 0, u, catBytes, catCounts, largest);
+                    JSONObject fo = new JSONObject();
+                    put(fo, "name", k.getName());
+                    put(fo, "path", k.getAbsolutePath());
+                    put(fo, "size", fSize);
+                    folderObjs.add(fo);
+                } else if (u.allows(k)) {
+                    tallyFile(k, catBytes, catCounts, largest);
+                }
+            }
+        }
+        Collections.sort(folderObjs, new Comparator<JSONObject>() {
+            public int compare(JSONObject a, JSONObject b) {
+                return Long.compare(b.optLong("size"), a.optLong("size"));
+            }
+        });
+        for (int i = 0; i < folderObjs.size() && i < 15; i++) foldersArr.put(folderObjs.get(i));
+
+        String[] keys = {"video", "image", "audio", "archive", "doc", "apk", "other"};
+        JSONObject cats = new JSONObject();
+        long scannedBytes = 0;
+        int scannedFiles = 0;
+        for (int i = 0; i < keys.length; i++) {
+            JSONObject co = new JSONObject();
+            put(co, "bytes", catBytes[i]);
+            put(co, "count", catCounts[i]);
+            put(cats, keys[i], co);
+            scannedBytes += catBytes[i];
+            scannedFiles += catCounts[i];
+        }
+        JSONArray largestArr = new JSONArray();
+        for (File lf : largest) largestArr.put(Storage.entry(lf));
+
+        JSONObject out = new JSONObject();
+        put(out, "path", root.getPath());
+        put(out, "scannedBytes", scannedBytes);
+        put(out, "scannedFiles", scannedFiles);
+        try {
+            StatFs st = new StatFs(root.getPath());
+            put(out, "diskTotal", st.getTotalBytes());
+            put(out, "diskFree", st.getAvailableBytes());
+        } catch (Exception ignored) { }
+        put(out, "categories", cats);
+        put(out, "folders", foldersArr);
+        put(out, "largest", largestArr);
+        res.json(200, out.toString());
+    }
+
+    private long scanAnalyzer(File dir, int depth, Users.User u, long[] catBytes, int[] catCounts, List<File> largest) {
+        if (depth > 8 || dir.getName().equals(Storage.TRASH_DIR)) return 0;
+        File[] kids = dir.listFiles();
+        if (kids == null) return 0;
+        long sum = 0;
+        for (File k : kids) {
+            if (k.getName().equals(Storage.TRASH_DIR) || k.getName().endsWith(".nexpart")) continue;
+            if (!u.folders.isEmpty() && !u.allows(k) && !u.canTraverse(k)) continue;
+            if (k.isDirectory()) {
+                sum += scanAnalyzer(k, depth + 1, u, catBytes, catCounts, largest);
+            } else if (u.allows(k)) {
+                sum += k.length();
+                tallyFile(k, catBytes, catCounts, largest);
+            }
+        }
+        return sum;
+    }
+
+    private void tallyFile(File f, long[] catBytes, int[] catCounts, List<File> largest) {
+        long len = f.length();
+        String name = f.getName().toLowerCase(Locale.ROOT);
+        String mime = Storage.mime(name);
+        int idx = 6;
+        if (mime.startsWith("video/")) idx = 0;
+        else if (mime.startsWith("image/")) idx = 1;
+        else if (mime.startsWith("audio/")) idx = 2;
+        else if (name.endsWith(".zip") || name.endsWith(".rar") || name.endsWith(".7z") || name.endsWith(".tar") || name.endsWith(".gz")) idx = 3;
+        else if (name.endsWith(".apk") || name.endsWith(".xapk") || name.endsWith(".apks")) idx = 5;
+        else if (mime.startsWith("text/") || name.endsWith(".pdf") || name.endsWith(".doc") || name.endsWith(".docx")
+                || name.endsWith(".xls") || name.endsWith(".xlsx") || name.endsWith(".ppt") || name.endsWith(".pptx")
+                || name.endsWith(".json") || name.endsWith(".xml")) idx = 4;
+        catBytes[idx] += len;
+        catCounts[idx]++;
+        if (largest.size() < 20 || len > largest.get(largest.size() - 1).length()) {
+            largest.add(f);
+            Collections.sort(largest, new Comparator<File>() {
+                public int compare(File a, File b) {
+                    return Long.compare(b.length(), a.length());
+                }
+            });
+            if (largest.size() > 20) largest.remove(largest.size() - 1);
+        }
     }
 }

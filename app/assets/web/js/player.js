@@ -42,10 +42,14 @@ function MediaPlayer(body, win) {
     { label: 'ดาวน์โหลดไฟล์นี้', ico: 'download', run: () => { location.href = fileUrl(cur().path, true); } },
     document.pictureInPictureEnabled ? { label: 'ภาพซ้อนภาพ (PiP)', ico: 'restore', run: () => video.requestPictureInPicture().catch(() => {}) } : null,
   ]));
+  const pipBtn = document.pictureInPictureEnabled ? b('restore', 'ภาพซ้อนภาพ (PiP)', () => {
+    if (document.pictureInPictureElement) document.exitPictureInPicture().catch(() => {});
+    else video.requestPictureInPicture().catch(() => {});
+  }) : null;
   const fsBtn = b('max', 'เต็มจอ (F)', () => fullscreen());
   const ctrl = el('div', { class: 'mp-ctrl' }, seek, el('div', { class: 'mp-row' },
     b('back', 'ก่อนหน้า (P)', () => step(-1)), playBtn, b('fwd', 'ถัดไป (N)', () => step(1)),
-    time, el('div', { class: 'grow' }), muteBtn, vol, speedBtn, ccBtn, loopBtn, shufBtn, more, listBtn, fsBtn));
+    time, el('div', { class: 'grow' }), muteBtn, vol, speedBtn, ccBtn, loopBtn, shufBtn, pipBtn, more, listBtn, fsBtn));
   const stage = el('div', { class: 'mp-stage' }, screen, ctrl);
   const listItems = el('div', { class: 'items' });
   const listHead = el('h4');
@@ -193,14 +197,17 @@ function MediaPlayer(body, win) {
   }
 
   function renderList() {
+    const savedPos = store.get('mp.pos', {}) || {};
     listHead.replaceChildren(el('span', { text: 'เพลย์ลิสต์', style: { color: '#e6edf3', fontWeight: 600 } }), el('span', { text: st.list.length + ' ไฟล์' }));
     listItems.replaceChildren(...st.list.map((e, i) => {
       const k = kindOf(e);
       let thumb;
       if (k === 'video') { thumb = el('img', { loading: 'lazy', src: thumbUrl(e.path, 160), alt: '' }); thumb.onerror = () => thumb.replaceWith(el('div', { class: 'ph' }, fileIcon(k))); }
       else thumb = el('div', { class: 'ph' }, fileIcon(k));
+      const resumeAt = savedPos[e.path];
+      const subText = fmtSize(e.size) + (resumeAt ? ` · ▶ ต่อจาก ${fmtClock(resumeAt)}` : '');
       return el('div', { class: 'mp-item' + (i === st.i ? ' cur' : ''), onclick: () => play(i) }, thumb,
-        el('div', { style: { minWidth: 0 } }, el('div', { class: 'n', text: e.name }), el('div', { class: 'z', text: fmtSize(e.size) })));
+        el('div', { style: { minWidth: 0 } }, el('div', { class: 'n', text: e.name }), el('div', { class: 'z', text: subText })));
     }));
     const c = listItems.children[st.i];
     if (c) c.scrollIntoView({ block: 'nearest' });

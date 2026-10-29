@@ -520,6 +520,79 @@ public final class IntegrationTests {
             JSONArray logins = AuditLog.list(ctx, 20, "login", null);
             check(logins.length() >= 1, "login logged");
         });
+        test("share maxHits (burn-after-reading) and file request maxBytes limit", () -> {
+            String c = login("", pin);
+            // Share link with maxHits=1 expires right after 1st download
+            JSONObject burn = post("/api/share/create", c, new JSONObject()
+                .put("path", storage + "/DCIM/photo.jpg")
+                .put("maxHits", 1)
+                .toString()).json();
+            String burnId = burn.getString("id");
+            eq(1, burn.getInt("maxHits"));
+            eq(200, req("GET", "/s/" + burnId + "/f?dl=1", null).status);
+            eq(410, req("GET", "/s/" + burnId + "/f?dl=1", null).status);
+            eq(410, req("GET", "/s/" + burnId, null).status);
+
+            // File request link with maxBytes=5 rejects 10-byte file with 413
+            File dropDir = new File(storage, "Documents/sub");
+            JSONObject reqLim = post("/api/share/create", c, new JSONObject()
+                .put("path", dropDir.getPath())
+                .put("mode", "request")
+                .put("maxBytes", 5L)
+                .toString()).json();
+            String reqId = reqLim.getString("id");
+            eq(413, req("POST", "/s/" + reqId + "/upload?name=big.bin", null, "0123456789".getBytes(StandardCharsets.UTF_8)).status);
+            eq(200, req("POST", "/s/" + reqId + "/upload?name=small.bin", null, "1234".getBytes(StandardCharsets.UTF_8)).status);
+            new File(dropDir, "small.bin").delete();
+        });
+        test("built-in text editor (/api/write), on-phone zip/unzip, clipboard, storage analyzer, and live events", () -> {
+            String c = login("", pin);
+            String docDir = storage + "/Documents";
+            // Create new file via /api/write
+            Resp cr = req("POST", "/api/write?path=" + enc(docDir) + "&name=editme.md&create=1", c, "# Initial".getBytes(StandardCharsets.UTF_8));
+            eq(200, cr.status);
+            File editedFile = new File(storage, "Documents/editme.md");
+            eq("# Initial", read(editedFile));
+            // Create with same name and create=1 fails with 409
+            eq(409, req("POST", "/api/write?path=" + enc(docDir) + "&name=editme.md&create=1", c, "dup".getBytes(StandardCharsets.UTF_8)).status);
+            // Update existing file via /api/write
+            eq(200, req("POST", "/api/write?path=" + enc(editedFile.getPath()), c, "# Updated Content".getBytes(StandardCharsets.UTF_8)).status);
+            eq("# Updated Content", read(editedFile));
+
+            // Compress editme.md into archive.zip on the phone via /api/zip/save
+            Resp zs = post("/api/zip/save", c, new JSONObject()
+                .put("dst", docDir)
+                .put("name", "bundle.zip")
+                .put("p", new JSONArray().put(editedFile.getPath()))
+                .toString());
+            eq(200, zs.status);
+            File zipFile = new File(storage, "Documents/bundle.zip");
+            check(zipFile.isFile() && zipFile.length() > 0, "bundle.zip created");
+
+            // Extract bundle.zip via /api/unzip
+            Resp uz = post("/api/unzip?path=" + enc(zipFile.getPath()), c, null);
+            eq(200, uz.status);
+            eq(1, uz.json().getInt("extracted"));
+            File extracted = new File(storage, "Documents/bundle/editme.md");
+            eq("# Updated Content", read(extracted));
+            editedFile.delete();
+            zipFile.delete();
+            Storage.deleteRec(new File(storage, "Documents/bundle"));
+
+            // Shared clipboard (/api/clipboard)
+            Resp clipPost = post("/api/clipboard", c, new JSONObject().put("text", "https://nexshare.local:8443").toString());
+            eq(200, clipPost.status);
+            eq("https://nexshare.local:8443", clipPost.json().getString("current"));
+            JSONObject clipGet = req("GET", "/api/clipboard", c).json();
+            eq("https://nexshare.local:8443", clipGet.getString("current"));
+            check(clipGet.getJSONArray("items").length() >= 1, "clipboard history");
+
+            // Storage analyzer (/api/storage/analyze) & Live events (/api/events)
+            JSONObject sa = req("GET", "/api/storage/analyze", c).json();
+            check(sa.has("categories") && sa.has("folders") && sa.has("largest"), sa.toString());
+            JSONObject ev = req("GET", "/api/events?since=0", c).json();
+            check(ev.getLong("seq") > 0 && ev.getJSONArray("events").length() > 0, ev.toString());
+        });
     }
 
     static void davTests() throws Exception {

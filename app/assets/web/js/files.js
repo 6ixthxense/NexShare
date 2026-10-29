@@ -71,7 +71,7 @@ function FileStation(body, win) {
   }, icon('share'));
   const tools = el('div', { class: 'fs-tools' }, uploadBtn, createBtn, actionBtn, dlBtn, shareBtn, delBtn, el('div', { class: 'grow' }), hidBtn, viewList, viewGrid);
 
-  ops = createFileOps({ st, selected, open, load, updateSel, list });
+  ops = createFileOps({ st, selected, open, load, updateSel, list, buildSide: () => buildSide() });
 
   /** Hide write tools for read-only accounts / folders. */
   function applyWritable() {
@@ -107,7 +107,20 @@ function FileStation(body, win) {
     return el('div', { class: 'tree-node' }, row, kids);
   }
   function buildSide() {
-    side.replaceChildren(el('div', { class: 'sec', text: State.folders.length ? 'โฟลเดอร์ของคุณ' : 'ที่เก็บข้อมูล' }));
+    side.replaceChildren();
+    const favs = store.get('favorites', []) || [];
+    if (favs.length) {
+      side.append(el('div', { class: 'sec', text: 'รายการโปรด' }));
+      for (const f of favs) {
+        const rm = el('button', {
+          class: 'fav-unpin', title: 'เลิกปักหมุด', text: '×',
+          onclick: ev => { ev.stopPropagation(); ops.toggleFav(f); },
+        });
+        side.append(el('div', { class: 'tree-node' }, el('div', { class: 'tn fav-row', 'data-path': f.path, onclick: () => go(f.path) },
+          el('span', { class: 'caret none' }), fileIcon('folder'), el('span', { class: 'nm', text: f.name }), rm)));
+      }
+    }
+    side.append(el('div', { class: 'sec', text: State.folders.length ? 'โฟลเดอร์ของคุณ' : 'ที่เก็บข้อมูล' }));
     if (State.folders.length) for (const f of State.folders) side.append(treeNode(f.split(/[/\\]/).pop(), f, 0));
     else for (const r of State.roots) side.append(treeNode(r.name, r.path, 0));
     const mainRoot = State.folders.length ? null : State.roots[0];
@@ -123,6 +136,7 @@ function FileStation(body, win) {
       }
     }
     side.append(extra, link('ลิงก์ที่แชร์', 'link', () => openApp('shares')), link('ถังขยะ', 'trash', () => openApp('trash')));
+    markSide();
   }
   function markSide() {
     for (const n of side.querySelectorAll('.tn')) n.classList.toggle('cur', n.dataset.path === st.path && !st.searching);
@@ -368,6 +382,12 @@ function FileStation(body, win) {
 
   const onUploaded = dest => { if (st.path && !st.searching && (dest === st.path || dest.startsWith(st.path + '/'))) load(true); };
   Uploader.listeners.add(onUploaded);
+  const onLiveChange = ev => {
+    const p = ev.detail && ev.detail.path;
+    if (!p || !st.path || st.searching) return;
+    if (p === st.path || p.startsWith(st.path + '/')) load(true);
+  };
+  window.addEventListener('nexshare:fs-change', onLiveChange);
 
   buildSide();
   go(State.folders.length ? State.folders[0] : State.roots[0] ? State.roots[0].path : null);
@@ -375,6 +395,9 @@ function FileStation(body, win) {
 
   return {
     handle(arg) { if (arg.path) go(arg.path); if (arg.search) { searchIn.focus(); } },
-    destroy() { Uploader.listeners.delete(onUploaded); },
+    destroy() {
+      Uploader.listeners.delete(onUploaded);
+      window.removeEventListener('nexshare:fs-change', onLiveChange);
+    },
   };
 }

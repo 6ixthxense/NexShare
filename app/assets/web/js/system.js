@@ -72,14 +72,107 @@ function ResourceMonitor(body) {
   return { destroy() { Stats.listeners.delete(update); } };
 }
 
+function StorageAnalyzerTab(pane) {
+  fill(pane, el('div', { class: 'empty', text: 'กำลังวิเคราะห์การใช้พื้นที่เก็บข้อมูล…' }));
+  const CAT_META = [
+    ['video', 'วิดีโอ', '#3b8ef3'],
+    ['image', 'รูปภาพ', '#2fb36b'],
+    ['audio', 'เพลง / เสียง', '#f59e0b'],
+    ['doc', 'เอกสาร / โค้ด', '#8b5cf6'],
+    ['archive', 'ไฟล์บีบอัด (ZIP/RAR)', '#ec4899'],
+    ['apk', 'แอป (APK)', '#14b8a6'],
+    ['other', 'อื่น ๆ', '#64748b'],
+  ];
+  async function load() {
+    let data;
+    try {
+      data = await api('storage/analyze');
+    } catch (e) {
+      fill(pane, el('div', { class: 'notice', text: 'วิเคราะห์พื้นที่ไม่สำเร็จ: ' + e.message }));
+      return;
+    }
+    const total = Math.max(1, data.scannedBytes || 0);
+    const stackBar = el('div', { class: 'sa-bar' });
+    const legend = el('div', { class: 'sa-legend' });
+    for (const [key, label, color] of CAT_META) {
+      const c = (data.categories && data.categories[key]) || { bytes: 0, count: 0 };
+      const pct = c.bytes > 0 ? Math.max(1.5, (c.bytes / total) * 100) : 0;
+      if (pct > 0) {
+        stackBar.append(el('div', {
+          class: 'sa-seg',
+          title: `${label}: ${fmtSize(c.bytes)} (${c.count} ไฟล์)`,
+          style: { width: pct + '%', background: color },
+        }));
+      }
+      legend.append(el('div', { class: 'sa-leg-item' },
+        el('span', { class: 'sa-dot', style: { background: color } }),
+        el('span', { text: `${label}: ` }),
+        el('b', { text: fmtSize(c.bytes) }),
+        el('span', { class: 'muted', text: ` (${c.count})` })
+      ));
+    }
+
+    const folders = data.folders || [];
+    const largest = data.largest || [];
+    fill(pane,
+      el('div', { class: 'pane-head' },
+        el('h2', { text: 'วิเคราะห์พื้นที่เก็บข้อมูล' }),
+        el('span', { class: 'grow' }),
+        el('button', { class: 'btn', onclick: load }, icon('refresh'), 'สแกนใหม่')),
+      el('div', { class: 'card' },
+        el('h3', { text: `สัดส่วนตามประเภทไฟล์ (รวม ${fmtSize(data.scannedBytes || 0)} · ${data.scannedFiles || 0} ไฟล์)` }),
+        stackBar,
+        legend
+      ),
+      el('div', { class: 'card' },
+        el('h3', { text: 'โฟลเดอร์ที่ใช้พื้นที่มากที่สุด' }),
+        folders.length ? el('div', { class: 'sa-folders' },
+          ...folders.map(f => {
+            const pct = Math.min(100, Math.round((f.size / total) * 100));
+            return el('div', { class: 'meter', style: { cursor: 'pointer' }, onclick: () => openApp('filestation', { path: f.path }) },
+              el('div', { class: 'row' },
+                el('span', { text: '📁 ' + f.name }),
+                el('b', { text: `${fmtSize(f.size)} (${pct}%)` })),
+              el('div', { class: 'bar' }, el('i', { style: { width: Math.max(2, pct) + '%' } })));
+          })
+        ) : el('p', { class: 'muted', text: 'ไม่พบข้อมูลโฟลเดอร์' })
+      ),
+      el('div', { class: 'card' },
+        el('h3', { text: 'ไฟล์ขนาดใหญ่ที่สุด' }),
+        largest.length ? el('table', { class: 'tbl' },
+          el('thead', null, el('tr', null, el('th', { text: 'ชื่อไฟล์' }), el('th', { text: 'ขนาด' }), el('th', { text: 'แก้ไขล่าสุด' }), el('th', { text: '' }))),
+          el('tbody', null, ...largest.map(f => el('tr', null,
+            el('td', { class: 'name-cell', title: f.path }, fileIcon(kindOf(f)), el('span', { text: f.name })),
+            el('td', { text: fmtSize(f.size) }),
+            el('td', { class: 'muted', text: fmtDate(f.mtime) }),
+            el('td', { class: 'actions' },
+              el('button', { class: 'btn small', text: 'เปิดดู', onclick: () => openEntry(f, [f]) }),
+              State.canWrite ? el('button', {
+                class: 'btn small danger', text: 'ลบ',
+                onclick: async () => {
+                  if (!await dialog({ title: `ลบ "${f.name}"?`, message: `ขนาด ${fmtSize(f.size)}`, okText: 'ลบ', danger: true })) return;
+                  try { await api('delete', { p: f.path }, { method: 'POST' }); toast('ลบไฟล์แล้ว'); load(); }
+                  catch (e) { toast('ลบไม่สำเร็จ: ' + e.message); }
+                },
+              }) : null
+            )
+          )))
+        ) : el('p', { class: 'muted', text: 'ไม่พบไฟล์' })
+      )
+    );
+  }
+  load();
+}
+
 function ControlPanel(body) {
   const tabs = [
     ['general', 'ทั่วไป', 'info'],
+    ['storage', 'วิเคราะห์พื้นที่', 'folder'],
     ['security', 'ความปลอดภัย', 'shield'],
     ['users', 'ผู้ใช้', 'user'],
     ['services', 'บริการ', 'sync'],
     ['audit', 'บันทึกกิจกรรม', 'list'],
-  ].filter(([id]) => id === 'general' || State.admin);
+  ].filter(([id]) => id === 'general' || id === 'storage' || State.admin);
   const bar = el('div', { class: 'tabs' });
   const pane = el('div', { class: 'pane' });
   body.append(el('div', { class: 'cp' }, bar, pane));
@@ -90,6 +183,7 @@ function ControlPanel(body) {
     fill(bar, ...tabs.map(([t, label, ico]) => el('button', { class: 'tab' + (t === id ? ' on' : ''), onclick: () => select(t) }, icon(ico), label)));
     pane.replaceChildren();
     if (id === 'general') { renderGeneral(); timer = setInterval(renderGeneral, 5000); }
+    else if (id === 'storage') StorageAnalyzerTab(pane);
     else if (id === 'security') SecurityTab(pane);
     else if (id === 'users') UsersTab(pane);
     else if (id === 'services') ServicesTab(pane);

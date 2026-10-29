@@ -21,6 +21,8 @@ S = {
     'trash': [{'id': '1700000000000-abcd', 'name': 'old.txt', 'orig': ROOT + '/Documents/old.txt', 'deleted': now - 86400e3,
                'size': 1234, 'dir': False, 'by': 'admin'}],
     'audit': [{'ts': now - 60000, 'action': 'login', 'user': 'admin', 'ip': '127.0.0.1', 'detail': 'PIN/password login'}],
+    'clip': {'current': 'initial-clip', 'items': [{'text': 'initial-clip', 'ts': now - 30000, 'by': 'admin'}]},
+    'eventSeq': 1,
     'calls': [],
 }
 
@@ -144,11 +146,44 @@ class H(BaseHTTPRequestHandler):
         if a == 'thumb':
             tall_svg = b'<svg xmlns="http://www.w3.org/2000/svg" width="120" height="240"><rect width="120" height="240" fill="#3b8ef3"/></svg>'
             return self.send(200, ctype='image/svg+xml', body=tall_svg)
+        if a == 'exif':
+            path = q.get('path', [''])[0]
+            return self.send(200, {'name': path.rsplit('/', 1)[-1], 'path': path, 'size': 200000, 'mtime': now,
+                                   'width': 1080, 'height': 2400, 'make': 'Xiaomi', 'model': 'POCO X7 Pro',
+                                   'dateTaken': '2026:10:29 12:00:00', 'iso': '100', 'aperture': '1.8'})
         if a == 'file':
             path = q.get('path', [''])[0]
             if path.endswith('readme.md'):
-                return self.send(200, ctype='text/markdown; charset=utf-8', body=b'# NexShare Docs\n\n- Fast LAN transfer\n- **Tailscale** ready\n')
+                return self.send(200, ctype='text/markdown; charset=utf-8', body=S.get('readme_body', b'# NexShare Docs\n\n- Fast LAN transfer\n- **Tailscale** ready\n'))
             return self.send(200, ctype='text/plain; charset=utf-8', body=b'Hello from NexShare notes.txt\nLine 2\n')
+        if a == 'write':
+            path = q.get('path', [body.get('path', '')])[0]
+            if path.endswith('readme.md'):
+                S['readme_body'] = raw
+            return self.send(200, {'name': path.rsplit('/', 1)[-1], 'path': path, 'dir': False, 'size': len(raw), 'mtime': now, 'hidden': False})
+        if a == 'unzip':
+            return self.send(200, {'extracted': 3, 'path': ROOT + '/extracted', 'name': 'extracted'})
+        if a == 'zip/save':
+            return self.send(200, {'name': 'Archive.zip', 'path': ROOT + '/Archive.zip', 'dir': False, 'size': 4096, 'mtime': now, 'hidden': False})
+        if a == 'clipboard':
+            if method == 'POST':
+                txt = body.get('text', '').strip()
+                S['clip']['current'] = txt
+                S['clip']['items'].insert(0, {'text': txt, 'ts': int(time.time() * 1000), 'by': S['user']})
+            return self.send(200, S['clip'])
+        if a == 'storage/analyze':
+            return self.send(200, {
+                'path': ROOT, 'scannedBytes': 9250106, 'scannedFiles': 5, 'diskTotal': 256e9, 'diskFree': 100e9,
+                'categories': {
+                    'video': {'bytes': 9000000, 'count': 1}, 'image': {'bytes': 200000, 'count': 1},
+                    'audio': {'bytes': 0, 'count': 0}, 'doc': {'bytes': 50106, 'count': 3},
+                    'archive': {'bytes': 0, 'count': 0}, 'apk': {'bytes': 0, 'count': 0}, 'other': {'bytes': 0, 'count': 0},
+                },
+                'folders': [{'name': 'DCIM', 'path': ROOT + '/DCIM', 'size': 9200000}, {'name': 'Documents', 'path': ROOT + '/Documents', 'size': 50000}],
+                'largest': [{'name': 'b.mp4', 'path': ROOT + '/DCIM/b.mp4', 'dir': False, 'size': 9000000, 'mtime': now, 'hidden': False}],
+            })
+        if a == 'events':
+            return self.send(200, {'seq': S['eventSeq'], 'events': []})
         if a == 'upload/status':
             return self.send(200, {'offset': 0, 'exists': False})
         if a == 'system':
