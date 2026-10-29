@@ -118,24 +118,14 @@ public final class Storage {
         if (!user.folders.isEmpty()) {
             for (String p : user.folders) {
                 File f = new File(p);
-                if (f.exists()) total += sizeRecNoTrash(f, 0);
+                if (f.exists()) total += sizeRec(f, 0, true);
             }
         } else {
             for (File r : rootDirs(ctx)) {
-                if (r.exists()) total += sizeRecNoTrash(r, 0);
+                if (r.exists()) total += sizeRec(r, 0, true);
             }
         }
         return total;
-    }
-
-    private static long sizeRecNoTrash(File f, int depth) {
-        if (f.getName().equals(TRASH_DIR)) return 0;
-        if (!f.isDirectory()) return f.length();
-        if (depth > 32) return 0;
-        long n = 0;
-        File[] kids = f.listFiles();
-        if (kids != null) for (File k : kids) n += sizeRecNoTrash(k, depth + 1);
-        return n;
     }
 
     /** Returns true when adding additionalBytes would exceed the user's configured storage quota. */
@@ -195,9 +185,7 @@ public final class Storage {
             return ok;
         }
         try (InputStream in = new FileInputStream(src); OutputStream out = new FileOutputStream(dst)) {
-            byte[] buf = new byte[65536];
-            int n;
-            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+            pipe(in, out);
             dst.setLastModified(src.lastModified());
             return true;
         } catch (IOException e) {
@@ -216,12 +204,13 @@ public final class Storage {
         return false;
     }
 
-    public static long sizeRec(File f, int depth) {
+    public static long sizeRec(File f, int depth, boolean skipTrash) {
+        if (skipTrash && f.getName().equals(TRASH_DIR)) return 0;
         if (!f.isDirectory()) return f.length();
         if (depth > 32) return 0;
         long n = 0;
         File[] kids = f.listFiles();
-        if (kids != null) for (File k : kids) n += sizeRec(k, depth + 1);
+        if (kids != null) for (File k : kids) n += sizeRec(k, depth + 1, skipTrash);
         return n;
     }
 
@@ -301,9 +290,7 @@ public final class Storage {
         File tmp = new File(dir, "." + target.getName() + "." + Crypto.randomToken(4) + ".nexpart");
         boolean ok = false;
         try (OutputStream out = new FileOutputStream(tmp)) {
-            byte[] buf = new byte[65536];
-            int n;
-            while ((n = req.body.read(buf)) > 0) out.write(buf, 0, n);
+            pipe(req.body, out);
             ok = req.body.remaining() == 0;
         } finally {
             if (!ok) tmp.delete();
@@ -403,10 +390,15 @@ public final class Storage {
 
     public static byte[] readAll(InputStream in) throws IOException {
         ByteArrayOutputStream bo = new ByteArrayOutputStream();
-        byte[] buf = new byte[16384];
-        int n;
-        while ((n = in.read(buf)) > 0) bo.write(buf, 0, n);
+        pipe(in, bo);
         return bo.toByteArray();
+    }
+
+    /** Copies everything from in to out (neither stream is closed). */
+    public static void pipe(InputStream in, OutputStream out) throws IOException {
+        byte[] buf = new byte[65536];
+        int n;
+        while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
     }
 
     public static String escapeHtml(String s) {

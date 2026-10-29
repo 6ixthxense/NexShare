@@ -145,7 +145,7 @@ function initClipboardWidget() {
     if (!clipLatest) { toast('ยังไม่มีข้อความในคลิปบอร์ด'); return; }
     if (await copyText(clipLatest)) toast('คัดลอกข้อความล่าสุดแล้ว');
   };
-  loadClipboardWidget();
+  if (innerWidth > 760) loadClipboardWidget();
 }
 
 function initWidgets() {

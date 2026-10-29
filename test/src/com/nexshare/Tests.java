@@ -257,6 +257,13 @@ public final class Tests {
                 exchange(port, "GET http://host:8080/abs/x?q=1 HTTP/1.1\r\nConnection: close\r\n\r\n");
                 eq("/abs/x", last.get().path);
             });
+            test("gzip compression and Server-Timing", () -> {
+                StringBuilder big = new StringBuilder(2048);
+                for (int i = 0; i < 80; i++) big.append("repeated text block line ").append(i).append("\n");
+                String r = exchange(port, "POST /big HTTP/1.1\r\nAccept-Encoding: gzip\r\nContent-Length: " + big.length() + "\r\nConnection: close\r\n\r\n" + big);
+                check(r.contains("Content-Encoding: gzip"), "missing gzip: " + r.substring(0, Math.min(200, r.length())));
+                check(r.contains("Server-Timing: app;dur="), "missing server-timing: " + r.substring(0, Math.min(200, r.length())));
+            });
             test("client IP: tunnel header trusted only from loopback", () -> {
                 HttpServer.Request r = new HttpServer.Request();
                 r.remote = "127.0.0.1";

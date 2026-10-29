@@ -5,7 +5,8 @@
 
 function MediaApp(type) {
   return (body, win) => {
-    const pane = el('div', { class: 'photos' }, el('div', { class: 'empty', text: 'กำลังโหลด…' }));
+    const pane = el('div', { class: 'photos' },
+      el('div', { class: 'skeleton-grid' }, ...Array.from({ length: 16 }, () => el('div', { class: 'skeleton skeleton-card' }))));
     body.append(pane);
     let allItems = [];
     let curAlbum = 'all';
@@ -49,7 +50,7 @@ function MediaApp(type) {
         const d = new Date(e.mtime);
         const m = d.toLocaleDateString('th-TH', { year: 'numeric', month: 'long' });
         if (m !== month) { month = m; grid = el('div', { class: 'ph-grid' }); pane.append(el('h4', { text: m }), grid); }
-        const img = el('img', { loading: 'lazy', src: thumbUrl(e.path, 260), alt: '' });
+        const img = el('img', { loading: 'lazy', decoding: 'async', src: thumbUrl(e.path, 260), alt: '' });
         img.onerror = () => img.replaceWith(fileIcon(kindOf(e)));
         grid.append(el('div', { class: 'ph', title: `${e.name} (${albumOf(e)})`, onclick: () => openEntry(e, filtered) }, img,
           kindOf(e) === 'video' ? el('div', { class: 'play' }, icon('play')) : null));

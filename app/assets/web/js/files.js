@@ -160,7 +160,12 @@ function FileStation(body, win) {
     if (!st.path) return;
     if (!keepSel) st.sel.clear();
     st.searching = null;
-    list.replaceChildren(el('div', { class: 'empty', text: 'กำลังโหลด…' }));
+    if (st.view === 'grid') {
+      list.replaceChildren(el('div', { class: 'skeleton-grid' },
+        ...Array.from({ length: 12 }, () => el('div', { class: 'skeleton skeleton-card' }))));
+    } else {
+      list.replaceChildren(...Array.from({ length: 6 }, () => el('div', { class: 'skeleton skeleton-row' })));
+    }
     try {
       const r = await api('list', { path: st.path });
       st.entries = r.entries;
@@ -283,7 +288,7 @@ function FileStation(body, win) {
       const kind = kindOf(e);
       const pic = el('div', { class: 'pic' });
       if (kind === 'image' || kind === 'video') {
-        const img = el('img', { loading: 'lazy', src: thumbUrl(e.path, 200), alt: '' });
+        const img = el('img', { loading: 'lazy', decoding: 'async', src: thumbUrl(e.path, 200), alt: '' });
         img.onerror = () => img.replaceWith(fileIcon(kind));
         pic.append(img);
       } else pic.append(fileIcon(kind));

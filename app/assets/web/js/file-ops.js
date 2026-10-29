@@ -157,7 +157,21 @@ function createFileOps({ st, selected, open, load, updateSel, list, buildSide })
     if (!ok) return;
     try {
       const r = await api('delete', { p: sel.map(e => e.path), permanent: toTrash ? null : 1 }, { method: 'POST' });
-      toast(r.trash ? `ย้ายไปถังขยะแล้ว ${r.deleted} รายการ` : `ลบแล้ว ${r.deleted} รายการ`);
+      if (r.trash && r.deleted > 0) {
+        toastAction(`ย้ายไปถังขยะแล้ว ${r.deleted} รายการ`, 'เลิกทำ', async () => {
+          try {
+            const tl = await api('trash/list');
+            const items = (tl.items || []).slice(0, r.deleted);
+            if (items.length) {
+              await api('trash/restore', { id: items.map(x => x.id) }, { method: 'POST' });
+              toast('กู้คืนไฟล์เรียบร้อย');
+              load();
+            }
+          } catch (err) { toast('กู้คืนไม่สำเร็จ: ' + err.message); }
+        });
+      } else {
+        toast(`ลบแล้ว ${r.deleted} รายการ`);
+      }
     } catch (e) { toast('ลบไม่สำเร็จ: ' + e.message); }
     load();
   }

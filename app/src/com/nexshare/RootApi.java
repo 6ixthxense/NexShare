@@ -58,7 +58,7 @@ public class RootApi {
         put(o, "flavor", Flavor.ROOT ? "root" : "normal");
         put(o, "root", RootShell.available());
         put(o, "termux", new File("/data/data/com.termux/files/usr/bin").isDirectory());
-        put(o, "busybox", ToolBox.hasBusybox(ctx));
+        put(o, "busybox", ToolBox.busybox(ctx) != null);
         res.json(200, o.toString());
     }
 
@@ -334,9 +334,7 @@ public class RootApi {
         File apk = new File(dir, "upload-" + System.currentTimeMillis() + ".apk");
         boolean ok = false;
         try (OutputStream out = new FileOutputStream(apk)) {
-            byte[] buf = new byte[65536];
-            int n;
-            while ((n = req.body.read(buf)) > 0) out.write(buf, 0, n);
+            Storage.pipe(req.body, out);
             ok = req.body.remaining() == 0;
         }
         if (!ok) {

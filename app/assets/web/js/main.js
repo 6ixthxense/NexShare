@@ -156,10 +156,90 @@ async function start() {
   started = true;
   initWidgets();
   poll();
-  setInterval(poll, 2000);
+  let pollInterval = setInterval(poll, 2000);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
+    } else {
+      poll();
+      if (!pollInterval) pollInterval = setInterval(poll, 2000);
+    }
+  });
   if (State.roots.length && !State.roots[0].readable) notify('แอปบนมือถือยังไม่ได้รับสิทธิ์เข้าถึงไฟล์');
   if (innerWidth > 760) openApp('filestation');
 }
+
+function openCommandPalette() {
+  closePop();
+  let existing = $('#cmdPalette');
+  if (existing) { existing.remove(); return; }
+  const backdrop = el('div', { id: 'cmdPalette', class: 'cmd-palette-backdrop', onclick: e => { if (e.target === backdrop) backdrop.remove(); } });
+  const input = el('input', { class: 'cmd-input', placeholder: 'ค้นหาแอปหรือคำสั่งด่วน… (กด Esc เพื่อปิด)', spellcheck: 'false' });
+  const list = el('div', { class: 'cmd-list' });
+
+  const actions = [
+    ...Object.entries(APPS).filter(([id]) => appAllowed(id)).map(([id, a]) => ({
+      label: a.name,
+      sub: 'เปิดแอป',
+      ico: a.ico,
+      run: () => openApp(id)
+    })),
+    { label: I18n.theme === 'dark' ? 'สลับเป็นโหมดสว่าง' : 'สลับเป็นโหมดมืด', sub: 'ธีม', ico: 'monitor', run: () => I18n.toggleTheme() },
+    { label: I18n.lang === 'en' ? 'เปลี่ยนภาษาเป็น ภาษาไทย (TH)' : 'Switch language to English (EN)', sub: 'ภาษา', ico: 'help', run: () => { I18n.toggleLang(); Auth.renderForm(); } },
+    { label: 'ล้างถังขยะทั้งหมด', sub: 'พื้นที่', ico: 'trash', run: () => openApp('trash') },
+  ];
+
+  let selectedIdx = 0;
+  function render(q) {
+    list.replaceChildren();
+    const filtered = actions.filter(it => !q || it.label.toLowerCase().includes(q.toLowerCase()) || (it.sub && it.sub.toLowerCase().includes(q.toLowerCase())));
+    selectedIdx = Math.max(0, Math.min(selectedIdx, filtered.length - 1));
+    filtered.forEach((it, idx) => {
+      const row = el('div', {
+        class: 'cmd-item' + (idx === selectedIdx ? ' active' : ''),
+        onclick: () => { backdrop.remove(); it.run(); }
+      },
+        appIco(it.ico),
+        el('div', { class: 'cmd-lbl' }, el('strong', { text: it.label }), it.sub ? el('small', { text: it.sub }) : null)
+      );
+      list.append(row);
+    });
+    if (!filtered.length) list.append(el('div', { class: 'cmd-empty', text: 'ไม่พบคำสั่งที่ตรงกัน' }));
+  }
+
+  input.addEventListener('input', () => { selectedIdx = 0; render(input.value.trim()); });
+  input.addEventListener('keydown', e => {
+    const items = list.querySelectorAll('.cmd-item');
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      selectedIdx = (selectedIdx + 1) % Math.max(1, items.length);
+      render(input.value.trim());
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      selectedIdx = (selectedIdx - 1 + items.length) % Math.max(1, items.length);
+      render(input.value.trim());
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      const active = list.querySelector('.cmd-item.active');
+      if (active) active.click();
+    } else if (e.key === 'Escape') {
+      backdrop.remove();
+    }
+  });
+
+  const box = el('div', { class: 'cmd-box' }, input, list);
+  backdrop.append(box);
+  document.body.append(backdrop);
+  render('');
+  setTimeout(() => input.focus(), 30);
+}
+
+document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    openCommandPalette();
+  }
+});
 
 /** Installable web app (needs HTTPS or localhost; skipped silently elsewhere). */
 function registerPwa() {

@@ -12,7 +12,7 @@ import javax.crypto.spec.SecretKeySpec;
 
 /**
  * Small crypto toolbox: password hashing, TOTP (RFC 6238), base32/base64/hex.
- * Pure Java (no android.*) so it runs in unit tests and on API 24 (no java.util.Base64).
+ * Base64 uses android.util.Base64 (java.util.Base64 needs API 26); the JVM tests use a fake.
  */
 public final class Crypto {
 
@@ -178,34 +178,12 @@ public final class Crypto {
         return out.toByteArray();
     }
 
-    private static final char[] B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/".toCharArray();
-
     public static String base64Encode(byte[] d) {
-        StringBuilder sb = new StringBuilder((d.length + 2) / 3 * 4);
-        for (int i = 0; i < d.length; i += 3) {
-            int n = (d[i] & 0xff) << 16 | (i + 1 < d.length ? (d[i + 1] & 0xff) << 8 : 0) | (i + 2 < d.length ? d[i + 2] & 0xff : 0);
-            sb.append(B64[n >> 18 & 63]).append(B64[n >> 12 & 63]);
-            sb.append(i + 1 < d.length ? B64[n >> 6 & 63] : '=');
-            sb.append(i + 2 < d.length ? B64[n & 63] : '=');
-        }
-        return sb.toString();
+        return android.util.Base64.encodeToString(d, android.util.Base64.NO_WRAP);
     }
 
+    /** Standard base64; throws IllegalArgumentException on malformed input. */
     public static byte[] base64Decode(String s) {
-        s = s.replaceAll("[^A-Za-z0-9+/=_-]", "").replace('-', '+').replace('_', '/');
-        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
-        int buf = 0, bits = 0;
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
-            if (c == '=') break;
-            int v = c >= 'A' && c <= 'Z' ? c - 'A' : c >= 'a' && c <= 'z' ? c - 'a' + 26 : c >= '0' && c <= '9' ? c - '0' + 52 : c == '+' ? 62 : 63;
-            buf = (buf << 6) | v;
-            bits += 6;
-            if (bits >= 8) {
-                out.write((buf >> (bits - 8)) & 0xff);
-                bits -= 8;
-            }
-        }
-        return out.toByteArray();
+        return android.util.Base64.decode(s, android.util.Base64.DEFAULT);
     }
 }

@@ -36,9 +36,7 @@ public final class Zip {
         e.setTime(f.lastModified());
         z.putNextEntry(e);
         try (InputStream in = new FileInputStream(f)) {
-            byte[] buf = new byte[65536];
-            int n;
-            while ((n = in.read(buf)) > 0) z.write(buf, 0, n);
+            Storage.pipe(in, z);
         } catch (IOException ignored) { }
         z.closeEntry();
     }

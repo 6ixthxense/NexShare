@@ -590,8 +590,18 @@ public final class IntegrationTests {
             // Storage analyzer (/api/storage/analyze) & Live events (/api/events)
             JSONObject sa = req("GET", "/api/storage/analyze", c).json();
             check(sa.has("categories") && sa.has("folders") && sa.has("largest"), sa.toString());
+            // Fast cache hit on subsequent call
+            JSONObject saCached = req("GET", "/api/storage/analyze", c).json();
+            eq(sa.getLong("scannedBytes"), saCached.getLong("scannedBytes"));
             JSONObject ev = req("GET", "/api/events?since=0", c).json();
             check(ev.getLong("seq") > 0 && ev.getJSONArray("events").length() > 0, ev.toString());
+
+            // Pagination on /api/list
+            JSONObject pagedList = req("GET", "/api/list?path=" + enc(storage.getPath()) + "&offset=0&limit=1", c).json();
+            check(pagedList.getInt("total") > 1, "total entries");
+            eq(1, pagedList.getJSONArray("entries").length());
+            eq(0, pagedList.getInt("offset"));
+            eq(1, pagedList.getInt("limit"));
         });
     }
 

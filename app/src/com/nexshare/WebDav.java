@@ -396,7 +396,7 @@ public final class WebDav {
             res.error(409, "cannot copy a folder into itself");
             return;
         }
-        if (!move && Storage.exceedsQuota(ctx, user, Storage.sizeRec(src.file, 0))) {
+        if (!move && Storage.exceedsQuota(ctx, user, Storage.sizeRec(src.file, 0, false))) {
             res.error(507, "quota_exceeded");
             return;
         }

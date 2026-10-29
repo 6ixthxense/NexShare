@@ -19,10 +19,6 @@ public final class ToolBox {
         return f.exists() ? f : null;
     }
 
-    public static boolean hasBusybox(Context ctx) {
-        return busybox(ctx) != null;
-    }
-
     /** Directory where busybox applet symlinks are installed, or null if busybox isn't bundled. */
     public static String busyboxBinDir(Context ctx) {
         if (busybox(ctx) == null) return null;

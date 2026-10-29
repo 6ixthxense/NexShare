@@ -48,6 +48,7 @@ public final class LiveEvents {
     public static synchronized long publish(String type, String path, String detail) {
         long seq = nextSeq++;
         buffer.add(new Event(seq, System.currentTimeMillis(), type, path, detail));
+        FileApi.invalidateAnalyzerCache();
         while (buffer.size() > MAX_EVENTS) {
             buffer.remove(0);
         }

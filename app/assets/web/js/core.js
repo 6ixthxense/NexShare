@@ -253,6 +253,23 @@ function toast(msg, ms = 2600) {
   setTimeout(() => t.remove(), ms);
 }
 
+function toastAction(msg, actionLabel, onAction, ms = 6000) {
+  let timer;
+  const btn = el('button', {
+    class: 'btn-undo',
+    text: actionLabel,
+    onclick: (e) => {
+      e.stopPropagation();
+      clearTimeout(timer);
+      t.remove();
+      onAction();
+    }
+  });
+  const t = el('div', { class: 'toast toast-action' }, el('span', { text: msg }), btn);
+  $('#toasts').append(t);
+  timer = setTimeout(() => t.remove(), ms);
+}
+
 function dialog({ title, message, input, okText = 'ตกลง', danger, cancel = true, extra }) {
   return new Promise(resolve => {
     const field = input != null ? el('input', { value: input, spellcheck: 'false' }) : null;

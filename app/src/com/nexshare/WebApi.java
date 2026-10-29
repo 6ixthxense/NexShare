@@ -27,6 +27,7 @@ public class WebApi implements HttpServer.Handler {
     private final RootApi rootApi;
     private final WebDav dav;
     private final Map<String, byte[]> assetCache = new ConcurrentHashMap<>();
+    private final Map<String, String> assetEtags = new ConcurrentHashMap<>();
 
     /** Root routes that can change or reveal the device beyond files: they need a fresh re-auth. */
     private static final List<String> ROOT_SUDO = Arrays.asList(
@@ -46,6 +47,7 @@ public class WebApi implements HttpServer.Handler {
         String p = req.path;
         if (redirectToHttps(req, res)) return;
         if (WebDav.matches(p)) {
+            res.gzipOk = false; // some WebDAV clients (Windows mini-redirector) mishandle gzip
             dav.handle(req, res);
             return;
         }
@@ -55,7 +57,7 @@ public class WebApi implements HttpServer.Handler {
             return;
         }
         if (!p.startsWith("/api/")) {
-            serveAsset(p, res);
+            serveAsset(req, p, res);
             return;
         }
         if (!Auth.sameOrigin(req)) {
@@ -144,7 +146,7 @@ public class WebApi implements HttpServer.Handler {
 
     // ---------------------------------------------------------------- static web UI
 
-    private void serveAsset(String p, HttpServer.Response res) throws IOException {
+    private void serveAsset(HttpServer.Request req, String p, HttpServer.Response res) throws IOException {
         if (p.equals("/") || p.isEmpty()) p = "/index.html";
         if (p.contains("..") || p.contains("\\")) {
             res.error(400, "bad path");
@@ -161,7 +163,19 @@ public class WebApi implements HttpServer.Handler {
                 return;
             }
         }
+        // Assets only change with an app update, so a content hash is a stable validator:
+        // revisits get a tiny 304 instead of the whole file.
+        String etag = assetEtags.get(name);
+        if (etag == null) {
+            etag = "\"" + Integer.toHexString(java.util.Arrays.hashCode(data)) + "-" + Integer.toHexString(data.length) + "\"";
+            assetEtags.put(name, etag);
+        }
         res.header("Cache-Control", "no-cache");
+        res.header("ETag", etag);
+        if (etag.equals(req.header("if-none-match"))) {
+            res.empty(304);
+            return;
+        }
         if (p.equals("/index.html")) {
             res.header("Content-Security-Policy", "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; "
                 + "style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; worker-src 'self'; "

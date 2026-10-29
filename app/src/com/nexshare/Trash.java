@@ -42,7 +42,7 @@ public final class Trash {
         if (dir == null) return false;
         String id = System.currentTimeMillis() + "-" + Crypto.randomToken(4);
         File dst = new File(dir, id);
-        long size = Storage.sizeRec(item, 0);
+        long size = Storage.sizeRec(item, 0, false);
         boolean isDir = item.isDirectory();
         if (!item.renameTo(dst)) return false;
         JSONObject meta = new JSONObject();

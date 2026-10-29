@@ -158,12 +158,28 @@ final class FileApi {
             }
             arr.put(Storage.entry(f));
         }
+        int total = arr.length();
+        int offset = 0, limit = -1;
+        if (req.param("offset") != null) try { offset = Math.max(0, Integer.parseInt(req.param("offset"))); } catch (Exception ignored) {}
+        if (req.param("limit") != null) try { limit = Math.max(1, Integer.parseInt(req.param("limit"))); } catch (Exception ignored) {}
+        JSONArray paged = arr;
+        if (limit > 0 || offset > 0) {
+            paged = new JSONArray();
+            for (int i = offset; i < total && (limit <= 0 || paged.length() < limit); i++) {
+                paged.put(arr.opt(i));
+            }
+        }
         JSONObject o = new JSONObject();
         put(o, "path", dir.getPath());
         boolean top = Storage.isRoot(ctx, dir) || (!u.folders.isEmpty() && !u.allows(dir.getParentFile()) && !u.canTraverse(dir.getParentFile()));
         put(o, "parent", top ? JSONObject.NULL : dir.getParent());
         put(o, "writable", u.canWrite() && u.allows(dir));
-        put(o, "entries", arr);
+        put(o, "entries", paged);
+        put(o, "total", total);
+        if (limit > 0) {
+            put(o, "offset", offset);
+            put(o, "limit", limit);
+        }
         res.json(200, o.toString());
     }
 
@@ -202,10 +218,19 @@ final class FileApi {
                 return Long.compare(b.lastModified(), a.lastModified());
             }
         });
+        int offset = 0, limit = -1;
+        if (req.param("offset") != null) try { offset = Math.max(0, Integer.parseInt(req.param("offset"))); } catch (Exception ignored) {}
+        if (req.param("limit") != null) try { limit = Math.max(1, Integer.parseInt(req.param("limit"))); } catch (Exception ignored) {}
+        int maxItems = limit > 0 ? limit : 2000;
         JSONArray arr = new JSONArray();
-        for (int i = 0; i < found.size() && i < 2000; i++) arr.put(Storage.entry(found.get(i)));
+        for (int i = offset; i < found.size() && arr.length() < maxItems; i++) arr.put(Storage.entry(found.get(i)));
         JSONObject o = new JSONObject();
         put(o, "entries", arr);
+        put(o, "total", found.size());
+        if (limit > 0) {
+            put(o, "offset", offset);
+            put(o, "limit", limit);
+        }
         res.json(200, o.toString());
     }
 
@@ -231,12 +256,25 @@ final class FileApi {
         try {
             if (req.param("s") != null) size = Math.max(64, Math.min(1024, Integer.parseInt(req.param("s"))));
         } catch (NumberFormatException ignored) { }
-        byte[] data = f.isFile() ? thumbs.get(f, size) : null;
-        if (data == null) {
+        if (!f.isFile()) {
             res.error(404, "no thumbnail");
             return;
         }
+        // Thumbnails depend only on the file's identity + size: answer revalidations with 304
+        // without decoding anything.
+        String etag = "\"t" + Long.toHexString(f.lastModified()) + "-" + Long.toHexString(f.length()) + "-" + size + "\"";
         res.header("Cache-Control", "private, max-age=86400");
+        res.header("ETag", etag);
+        if (etag.equals(req.header("if-none-match"))) {
+            res.empty(304);
+            return;
+        }
+        byte[] data = thumbs.get(f, size);
+        if (data == null) {
+            res.extra.remove("ETag");
+            res.error(404, "no thumbnail");
+            return;
+        }
         res.bytes(200, "image/jpeg", data);
     }
 
@@ -583,7 +621,7 @@ final class FileApi {
             File f = Storage.resolve(ctx, u, p);
             if (f.exists()) {
                 items.add(f);
-                estBytes += Storage.sizeRec(f, 0);
+                estBytes += Storage.sizeRec(f, 0, false);
             }
         }
         if (items.isEmpty()) {
@@ -689,7 +727,7 @@ final class FileApi {
             if (dst.getPath().equals(src.getPath())
                     || dst.getPath().startsWith(src.getPath() + File.separator)
                     || dst.getPath().startsWith(src.getPath() + "/")) continue;
-            if (!move && Storage.exceedsQuota(ctx, u, Storage.sizeRec(src, 0))) {
+            if (!move && Storage.exceedsQuota(ctx, u, Storage.sizeRec(src, 0, false))) {
                 res.error(507, "quota_exceeded");
                 return;
             }
@@ -902,9 +940,22 @@ final class FileApi {
 
     // ---------------------------------------------------------------- storage analyzer
 
+    private static volatile String cachedAnalyzerJson = null;
+    private static volatile String cachedAnalyzerKey = null;
+    private static volatile long cachedAnalyzerTime = 0;
+
+    static void invalidateAnalyzerCache() {
+        cachedAnalyzerJson = null;
+    }
+
     private void storageAnalyze(HttpServer.Request req, HttpServer.Response res, Users.User u) throws IOException {
-        File root;
         String pathParam = req.param("path");
+        String cacheKey = (pathParam == null ? "" : pathParam) + "|" + u.name;
+        if (cachedAnalyzerJson != null && cacheKey.equals(cachedAnalyzerKey) && System.currentTimeMillis() - cachedAnalyzerTime < 300_000) {
+            res.json(200, cachedAnalyzerJson);
+            return;
+        }
+        File root;
         if (pathParam != null && !pathParam.isEmpty()) {
             root = Storage.resolveBrowse(ctx, u, pathParam);
         } else if (!u.folders.isEmpty()) {
@@ -968,7 +1019,10 @@ final class FileApi {
         put(out, "categories", cats);
         put(out, "folders", foldersArr);
         put(out, "largest", largestArr);
-        res.json(200, out.toString());
+        cachedAnalyzerJson = out.toString();
+        cachedAnalyzerKey = cacheKey;
+        cachedAnalyzerTime = System.currentTimeMillis();
+        res.json(200, cachedAnalyzerJson);
     }
 
     private long scanAnalyzer(File dir, int depth, Users.User u, long[] catBytes, int[] catCounts, List<File> largest) {
