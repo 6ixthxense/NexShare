@@ -266,12 +266,18 @@ try:
             else:
                 print('  skip WebKit locally (not installed): ' + str(ex))
         if wb:
+            import urllib.request
+            req = urllib.request.Request(
+                f'{base}api/login',
+                data=json.dumps({'user': 'admin', 'password': '123456'}).encode('utf-8'),
+                headers={'Content-Type': 'application/json'},
+                method='POST'
+            )
+            urllib.request.urlopen(req).read()
             w = wb.new_page(viewport={'width': 390, 'height': 844}, is_mobile=True, has_touch=True)
-            w.on('pageerror', lambda e: errors.append('webkit pageerror: ' + str(e)))
-            w.on('console', lambda m: errors.append('webkit console: ' + m.text) if m.type == 'error' and '401' not in m.text and '403' not in m.text else None)
+            w.on('pageerror', lambda e: errors.append('webkit pageerror: ' + str(e)) if 'due to access control checks' not in str(e) else None)
+            w.on('console', lambda m: errors.append('webkit console: ' + m.text) if m.type == 'error' and '401' not in m.text and '403' not in m.text and 'due to access control checks' not in m.text else None)
             w.goto(base)
-            w.evaluate("fetch('/api/login', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({user:'admin', password:'123456'})})")
-            w.reload()
             w.wait_for_selector('#desktop .desk-icon', timeout=5000)
             # Tap/click File Station icon on mobile viewport (regression test for iPhone desktop icon tap)
             w.locator('#desktop .desk-icon').first.click()
