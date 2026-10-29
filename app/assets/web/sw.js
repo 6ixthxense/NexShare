@@ -3,7 +3,7 @@
  * the network (never cached). Bump VERSION when the asset list changes. */
 'use strict';
 
-const VERSION = 'nexshare-v2.1.1';
+const VERSION = 'nexshare-v2.1.2';
 const SHELL = [
   '/', '/index.html', '/style.css', '/manifest.webmanifest',
   '/vendor/qrcode.js',
