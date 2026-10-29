@@ -78,7 +78,7 @@ try:
         }""")
         ok('grid view constrains tall thumbnail within frame without overlapping filename', box_ok)
         pg.locator('.fs-tools button[title="มุมมองรายการ"]').click()
-        pg.locator('.fs-tools button[title="ขึ้น"]').click()
+        pg.locator('.fs-nav button[title="โฟลเดอร์แม่"]').click()
         pg.wait_for_selector('.fs-list [data-path$="/notes.txt"]', timeout=3000)
 
         # PDF preview test (single clean iframe without duplicate doc-bar or open navpanes)
@@ -91,7 +91,7 @@ try:
            '#navpanes=0' in pdf_src and pg.locator('#viewer .doc-bar').count() == 0, pdf_src)
         pg.keyboard.press('Escape')
         pg.wait_for_selector('#viewer.hidden', state='attached', timeout=2000)
-        pg.locator('.fs-tools button[title="ขึ้น"]').click()
+        pg.locator('.fs-nav button[title="โฟลเดอร์แม่"]').click()
         pg.wait_for_selector('.fs-list [data-path$="/notes.txt"]', timeout=3000)
 
         # File Station: select a file and share it
