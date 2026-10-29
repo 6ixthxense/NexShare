@@ -191,6 +191,14 @@ public final class Settings {
         prefs(c).edit().putBoolean("keepScreenOn", on).apply();
     }
 
+    public static boolean startOnBoot(Context c) {
+        return prefs(c).getBoolean("startOnBoot", false);
+    }
+
+    public static void setStartOnBoot(Context c, boolean on) {
+        prefs(c).edit().putBoolean("startOnBoot", on).apply();
+    }
+
     public static String serverName(Context c) {
         return prefs(c).getString("name", "NexShare-" + Build.MODEL.replace(' ', '-'));
     }

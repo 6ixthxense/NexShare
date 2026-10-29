@@ -12,19 +12,20 @@ now = int(time.time() * 1000)
 
 S = {
     'logged': False, 'user': 'admin', 'sudo': False, 'pin': '123456',
-    'users': [{'name': 'mom', 'role': 'ro', 'folders': [ROOT + '/DCIM']}],
+    'users': [{'name': 'mom', 'role': 'ro', 'folders': [ROOT + '/DCIM'], 'quota': 0, 'used': 200000}],
     'settings': {'pinEnabled': True, 'adminPassword': False, 'totpMode': 'off', 'https': True, 'httpsPort': 8443,
                  'httpsRunning': True, 'forceHttps': False, 'tlsFingerprint': 'AB:CD:' * 15 + 'EF', 'trash': True,
-                 'trashDays': 30, 'webdav': True, 'webdavTunnel': False, 'sessions': 2},
+                 'trashDays': 30, 'webdav': True, 'webdavTunnel': False, 'startOnBoot': False, 'sessions': 2},
     'shares': [{'id': 'abcdefghijklmnop', 'path': ROOT + '/DCIM/a.jpg', 'name': 'a.jpg', 'dir': False, 'owner': 'admin',
-                'created': now - 3600e3, 'expires': now + 86400e3, 'hits': 3, 'password': True}],
+                'created': now - 3600e3, 'expires': now + 86400e3, 'hits': 3, 'password': True, 'mode': 'share', 'label': ''}],
     'trash': [{'id': '1700000000000-abcd', 'name': 'old.txt', 'orig': ROOT + '/Documents/old.txt', 'deleted': now - 86400e3,
                'size': 1234, 'dir': False, 'by': 'admin'}],
+    'audit': [{'ts': now - 60000, 'action': 'login', 'user': 'admin', 'ip': '127.0.0.1', 'detail': 'PIN/password login'}],
     'calls': [],
 }
 
 FILES = {
-    ROOT: [('DCIM', True, 0), ('Documents', True, 0), ('Download', True, 0), ('notes.txt', False, 42)],
+    ROOT: [('DCIM', True, 0), ('Documents', True, 0), ('Download', True, 0), ('notes.txt', False, 42), ('readme.md', False, 64)],
     ROOT + '/DCIM': [('a.jpg', False, 200000), ('b.mp4', False, 9000000)],
     ROOT + '/Documents': [('report.pdf', False, 50000)],
     ROOT + '/Download': [],
@@ -115,8 +116,10 @@ class H(BaseHTTPRequestHandler):
             user = body.get('user') or 'admin'
             ok = (user == 'admin' and body.get('password') == S['pin']) or (user == 'mom' and body.get('password') == 'momsecret1')
             if not ok:
+                S['audit'].insert(0, {'ts': int(time.time() * 1000), 'action': 'login_fail', 'user': user, 'ip': '127.0.0.1', 'detail': 'wrong password/PIN'})
                 return self.send(401, {'error': 'wrong_credentials'})
             S['logged'], S['user'], S['sudo'] = True, user, user == 'admin'
+            S['audit'].insert(0, {'ts': int(time.time() * 1000), 'action': 'login', 'user': user, 'ip': '127.0.0.1', 'detail': 'PIN/password login'})
             return self.send(200, {'ok': True})
         if not S['logged']:
             return self.send(401, {'error': 'unauthorized'})
@@ -138,9 +141,16 @@ class H(BaseHTTPRequestHandler):
                 return self.send(403, {'error': 'not allowed for this user'})
             ents = [entry(path, *e) for e in FILES.get(path, [])]
             return self.send(200, {'path': path, 'parent': None if path == ROOT else path.rsplit('/', 1)[0], 'writable': role != 'ro', 'entries': ents})
+        if a == 'file':
+            path = q.get('path', [''])[0]
+            if path.endswith('readme.md'):
+                return self.send(200, ctype='text/markdown; charset=utf-8', body=b'# NexShare Docs\n\n- Fast LAN transfer\n- **Tailscale** ready\n')
+            return self.send(200, ctype='text/plain; charset=utf-8', body=b'Hello from NexShare notes.txt\nLine 2\n')
+        if a == 'upload/status':
+            return self.send(200, {'offset': 0, 'exists': False})
         if a == 'system':
             return self.send(200, {'name': 'NexShare-POCO', 'model': 'Xiaomi POCO X7 Pro', 'android': '15', 'sdk': 35, 'uptime': 3600e3, 'cores': 8,
-                                   'ip': '192.168.1.50', 'host': 'nexshare.local', 'port': 8080, 'httpsPort': 8443, 'connections': 3,
+                                   'ip': '192.168.1.50', 'tailscaleIp': '100.88.1.2', 'host': 'nexshare.local', 'port': 8080, 'httpsPort': 8443, 'connections': 3,
                                    'memTotal': 12e9, 'memAvail': 5e9, 'cpu': 12.5, 'diskTotal': 256e9, 'diskFree': 100e9,
                                    'battery': 80, 'charging': True, 'batteryTemp': 31.0, 'rx': 1e6, 'tx': 2e6, 'time': now})
         if a in ('settings',):
@@ -154,16 +164,31 @@ class H(BaseHTTPRequestHandler):
         if a == 'users/save':
             if not S['sudo']:
                 return self.send(403, {'error': 'sudo_required'})
-            S['users'] = [x for x in S['users'] if x['name'] != body['name']] + [{'name': body['name'], 'role': body['role'], 'folders': body.get('folders', [])}]
+            S['users'] = [x for x in S['users'] if x['name'] != body['name']] + [{
+                'name': body['name'], 'role': body['role'], 'folders': body.get('folders', []),
+                'quota': body.get('quota', 0), 'used': 0,
+            }]
+            S['audit'].insert(0, {'ts': int(time.time() * 1000), 'action': 'user_save', 'user': S['user'], 'ip': '127.0.0.1', 'detail': body['name']})
             return self.send(200, {'users': S['users']})
+        if a == 'audit':
+            return self.send(200, {'entries': S['audit']})
+        if a == 'audit/clear':
+            if not S['sudo']:
+                return self.send(403, {'error': 'sudo_required'})
+            S['audit'] = []
+            return self.send(200, {'ok': True})
         if a == 'tunnel/status':
             return self.send(200, {'supported': True, 'state': 'connected', 'url': 'https://demo-tunnel.trycloudflare.com', 'error': '', 'mode': 'quick', 'hasToken': False, 'log': '', 'totpMode': 'off'})
         if a == 'share/list':
             return self.send(200, {'shares': S['shares']})
         if a == 'share/create':
-            sh = {'id': 'qrstuvwxyz234567', 'path': body['path'], 'name': body['path'].rsplit('/', 1)[-1], 'dir': False, 'owner': S['user'],
-                  'created': now, 'expires': now + body.get('hours', 0) * 3600e3 if body.get('hours') else 0, 'hits': 0, 'password': bool(body.get('password'))}
+            mode = body.get('mode') or 'share'
+            sh = {'id': 'qrstuvwxyz234567', 'path': body['path'], 'name': body['path'].rsplit('/', 1)[-1],
+                  'dir': mode == 'request' or body['path'].endswith('DCIM'), 'owner': S['user'],
+                  'created': now, 'expires': now + body.get('hours', 0) * 3600e3 if body.get('hours') else 0,
+                  'hits': 0, 'password': bool(body.get('password')), 'mode': mode, 'label': body.get('label', '')}
             S['shares'].append(sh)
+            S['audit'].insert(0, {'ts': int(time.time() * 1000), 'action': 'request_create' if mode == 'request' else 'share_create', 'user': S['user'], 'ip': '127.0.0.1', 'detail': body['path']})
             return self.send(200, sh)
         if a == 'trash/list':
             return self.send(200, {'items': S['trash'], 'enabled': True, 'days': 30})

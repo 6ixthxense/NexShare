@@ -71,7 +71,7 @@ public final class Storage {
         File f = new File(path).getCanonicalFile();
         String fp = f.getPath();
         for (String rp : roots) {
-            if (fp.equals(rp) || fp.startsWith(rp + "/")) return f;
+            if (fp.equals(rp) || fp.startsWith(rp + File.separator) || fp.startsWith(rp + "/")) return f;
         }
         throw new SecurityException("outside storage");
     }
@@ -93,7 +93,7 @@ public final class Storage {
     }
 
     public static boolean inTrash(File canonical) {
-        String p = canonical.getPath();
+        String p = canonical.getPath().replace('\\', '/');
         return p.contains("/" + TRASH_DIR + "/") || p.endsWith("/" + TRASH_DIR);
     }
 
@@ -105,8 +105,44 @@ public final class Storage {
     /** The storage root containing this canonical file, or null. */
     public static File rootOf(Context ctx, File f) {
         String fp = f.getPath();
-        for (String r : canonicalRoots(ctx)) if (fp.equals(r) || fp.startsWith(r + "/")) return new File(r);
+        for (String r : canonicalRoots(ctx)) {
+            if (fp.equals(r) || fp.startsWith(r + File.separator) || fp.startsWith(r + "/")) return new File(r);
+        }
         return null;
+    }
+
+    /** Total bytes used inside a user's allowed folders (excluding trash). */
+    public static long userUsedBytes(Context ctx, Users.User user) {
+        if (user == null) return 0;
+        long total = 0;
+        if (!user.folders.isEmpty()) {
+            for (String p : user.folders) {
+                File f = new File(p);
+                if (f.exists()) total += sizeRecNoTrash(f, 0);
+            }
+        } else {
+            for (File r : rootDirs(ctx)) {
+                if (r.exists()) total += sizeRecNoTrash(r, 0);
+            }
+        }
+        return total;
+    }
+
+    private static long sizeRecNoTrash(File f, int depth) {
+        if (f.getName().equals(TRASH_DIR)) return 0;
+        if (!f.isDirectory()) return f.length();
+        if (depth > 32) return 0;
+        long n = 0;
+        File[] kids = f.listFiles();
+        if (kids != null) for (File k : kids) n += sizeRecNoTrash(k, depth + 1);
+        return n;
+    }
+
+    /** Returns true when adding additionalBytes would exceed the user's configured storage quota. */
+    public static boolean exceedsQuota(Context ctx, Users.User user, long additionalBytes) {
+        if (user == null || user.quotaBytes <= 0) return false;
+        long add = Math.max(0L, additionalBytes);
+        return userUsedBytes(ctx, user) + add > user.quotaBytes;
     }
 
     // ---------------------------------------------------------------- helpers
@@ -276,6 +312,65 @@ public final class Storage {
         if (overwrite && target.isFile()) target.delete();
         if (!tmp.renameTo(target)) {
             tmp.delete();
+            throw new IOException("cannot save");
+        }
+        return target;
+    }
+
+    /** Deterministic .nexpart file used by resumable uploads so interrupted transfers can resume. */
+    public static File partialFile(File dir, String name) {
+        return new File(dir, "." + name + ".nexpart");
+    }
+
+    /** Bytes already uploaded for dir/name, or 0 if no valid .nexpart file exists. */
+    public static long partialSize(File dir, String name, long expectedTotal) {
+        File part = partialFile(dir, name);
+        if (!part.isFile()) return 0;
+        long len = part.length();
+        if (expectedTotal >= 0 && len > expectedTotal) {
+            part.delete();
+            return 0;
+        }
+        return len;
+    }
+
+    /**
+     * Appends/writes a resumable upload chunk or stream at the given byte offset.
+     * Keeps the .nexpart file on disk if the stream drops midway so the client can resume.
+     * When the file reaches totalSize, renames .nexpart to the final destination and returns it;
+     * otherwise returns null ( callers can check partialFile(dir, name).length() ).
+     */
+    public static File receiveResumable(HttpServer.Request req, File dir, String name, boolean overwrite, long offset, long totalSize) throws IOException {
+        File part = partialFile(dir, name);
+        if (offset == 0) {
+            if (part.exists()) part.delete();
+        } else {
+            if (!part.isFile() || part.length() != offset) {
+                throw new IOException("offset_mismatch:" + (part.isFile() ? part.length() : 0));
+            }
+        }
+        boolean bodyComplete = false;
+        try (RandomAccessFile raf = new RandomAccessFile(part, "rw")) {
+            raf.seek(offset);
+            byte[] buf = new byte[65536];
+            int n;
+            while ((n = req.body.read(buf)) > 0) {
+                raf.write(buf, 0, n);
+            }
+            bodyComplete = req.body.remaining() == 0;
+        } catch (IOException ioe) {
+            // Leave the partial bytes on disk so the client can resume from part.length().
+            return null;
+        }
+        if (!bodyComplete) return null;
+        long currentLen = part.length();
+        if (totalSize >= 0 && currentLen < totalSize) {
+            // Chunk succeeded, more chunks expected.
+            return null;
+        }
+        File target = overwrite ? new File(dir, name) : uniqueFile(dir, name);
+        if (overwrite && target.isFile()) target.delete();
+        if (!part.renameTo(target)) {
             throw new IOException("cannot save");
         }
         return target;

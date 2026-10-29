@@ -14,9 +14,10 @@ function drawChart(canvas, series, max, noLabels) {
   c.setTransform(dpr, 0, 0, dpr, 0, 0);
   c.clearRect(0, 0, w, h);
   const top = max || Math.max(1, ...series.flatMap(s => s.data)) * 1.15;
-  c.strokeStyle = '#e7ecf2';
+  const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  c.strokeStyle = isDark ? '#2a3442' : '#e7ecf2';
   c.lineWidth = 1;
-  c.fillStyle = '#9aa6b2';
+  c.fillStyle = isDark ? '#7d8b99' : '#9aa6b2';
   c.font = '10px sans-serif';
   const steps = noLabels ? 5 : 2;
   for (let i = 0; i <= steps; i++) {
@@ -72,8 +73,13 @@ function ResourceMonitor(body) {
 }
 
 function ControlPanel(body) {
-  const tabs = [['general', 'ทั่วไป', 'info'], ['security', 'ความปลอดภัย', 'shield'], ['users', 'ผู้ใช้', 'user'], ['services', 'บริการ', 'sync']]
-    .filter(([id]) => id === 'general' || State.admin);
+  const tabs = [
+    ['general', 'ทั่วไป', 'info'],
+    ['security', 'ความปลอดภัย', 'shield'],
+    ['users', 'ผู้ใช้', 'user'],
+    ['services', 'บริการ', 'sync'],
+    ['audit', 'บันทึกกิจกรรม', 'list'],
+  ].filter(([id]) => id === 'general' || State.admin);
   const bar = el('div', { class: 'tabs' });
   const pane = el('div', { class: 'pane' });
   body.append(el('div', { class: 'cp' }, bar, pane));
@@ -87,11 +93,17 @@ function ControlPanel(body) {
     else if (id === 'security') SecurityTab(pane);
     else if (id === 'users') UsersTab(pane);
     else if (id === 'services') ServicesTab(pane);
+    else if (id === 'audit') AuditTab(pane);
   }
   const renderGeneral = () => {
     const s = Stats.last || {};
-    const urls = [[`http://${s.host || 'nexshare.local'}:${s.port || 8080}`, 'Local domain'], s.ip ? [`http://${s.ip}:${s.port}`, 'ผ่าน IP'] : null,
-      s.ip && s.httpsPort ? [`https://${s.ip}:${s.httpsPort}`, 'HTTPS'] : null].filter(Boolean);
+    const urls = [
+      [`http://${s.host || 'nexshare.local'}:${s.port || 8080}`, 'Local domain'],
+      s.ip ? [`http://${s.ip}:${s.port}`, 'ผ่าน IP'] : null,
+      s.ip && s.httpsPort ? [`https://${s.ip}:${s.httpsPort}`, 'HTTPS'] : null,
+      s.tailscaleIp ? [`http://${s.tailscaleIp}:${s.port || 8080}`, 'Tailscale'] : null,
+      s.tailscaleIp && s.httpsPort ? [`https://${s.tailscaleIp}:${s.httpsPort}`, 'Tailscale (HTTPS)'] : null,
+    ].filter(Boolean);
     fill(pane,
       el('h2', { text: 'แผงควบคุม' }),
       State.roots.length && !State.roots[0].readable ? el('div', { class: 'notice', style: { margin: '0 0 12px' }, text: 'ยังไม่ได้ให้สิทธิ์เข้าถึงไฟล์ — เปิดแอป NexShare บนมือถือแล้วกด "อนุญาตให้เข้าถึงไฟล์ทั้งหมด"' }) : null,
@@ -124,33 +136,28 @@ function Help(body) {
     <h2>วิธีใช้ NexShare</h2>
     <ol>
       <li>เปิดแอป <b>NexShare</b> บนมือถือ แล้วกด <b>เริ่มแชร์</b> (ครั้งแรกต้องอนุญาตให้เข้าถึงไฟล์ทั้งหมด)</li>
-      <li>ให้คอมหรือมือถืออีกเครื่องต่อ Wi-Fi เดียวกัน (หรือต่อ Hotspot ของมือถือเครื่องนี้)</li>
+      <li>ให้คอมหรือมือถืออีกเครื่องต่อ Wi-Fi เดียวกัน (หรือต่อ Hotspot / Tailscale ของมือถือเครื่องนี้)</li>
       <li>เปิดเบราว์เซอร์ไปที่ <b class="mono">http://nexshare.local:8080</b> ถ้าเข้าไม่ได้ให้ใช้ลิงก์เลข IP ที่แสดงในแอป</li>
       <li>ใส่ PIN 6 หลักที่แสดงในแอป</li>
     </ol>
     <h3>File Station</h3>
     <ul>
       <li>ดับเบิลคลิกเพื่อเปิดโฟลเดอร์หรือดูไฟล์ (บนจอสัมผัสแตะครั้งเดียว)</li>
-      <li>ลากไฟล์หรือโฟลเดอร์จากคอมมาวางในหน้าต่างเพื่ออัปโหลด</li>
+      <li>ลากไฟล์หรือโฟลเดอร์จากคอมมาวางในหน้าต่างเพื่ออัปโหลด (รองรับอัปโหลดต่อจากจุดเดิมอัตโนมัติเมื่อเน็ตหลุด)</li>
       <li>เลือกหลายไฟล์ด้วย Ctrl/Shift หรือติ๊กช่องหน้าไฟล์ แล้วกด ดาวน์โหลด (หลายไฟล์จะรวมเป็น ZIP)</li>
-      <li>คลิกขวาเพื่อ เปลี่ยนชื่อ / คัดลอก / ตัด / วาง / ลบ · ปุ่มลัด: Delete, F2, Ctrl+A, Ctrl+C, Ctrl+X, Ctrl+V</li>
+      <li>คลิกขวาหรือกดปุ่ม ⋯ เพื่อ เปลี่ยนชื่อ / คัดลอก / ตัด / วาง / ลบ · ปุ่มลัด: Delete, F2, Ctrl+A, Ctrl+C, Ctrl+X, Ctrl+V</li>
       <li>ไฟล์ที่ลบจะไปอยู่ใน <b>Recycle Bin</b> กู้คืนได้ · กด Shift+Delete เพื่อลบถาวร</li>
-      <li>เลือกไฟล์แล้วกด <b>สร้างลิงก์แชร์</b> เพื่อส่งให้คนอื่นเปิดได้โดยไม่ต้องล็อกอิน (ตั้งวันหมดอายุ/รหัสผ่านได้)</li>
+      <li>เลือกไฟล์แล้วกด <b>สร้างลิงก์แชร์</b> หรือเลือกโฟลเดอร์แล้วกด <b>สร้างลิงก์ขอไฟล์</b> เพื่อรับไฟล์จากคนอื่นโดยไม่ต้องให้รหัสบัญชี</li>
     </ul>
     <h3>ใช้มือถือเป็นไดรฟ์ (WebDAV)</h3>
     <ul>
       <li>Windows: This PC → Map network drive · macOS: Finder → Connect to Server (⌘K)</li>
       <li>ที่อยู่ <b class="mono">http://nexshare.local:8080/dav/</b> ผู้ใช้ <b>admin</b> กับ PIN/รหัสผ่าน หรือบัญชีผู้ใช้อื่น</li>
     </ul>
-    <h3>ความปลอดภัย</h3>
+    <h3>ความปลอดภัยและบันทึกกิจกรรม</h3>
     <ul>
-      <li>แผงควบคุม → ความปลอดภัย: ตั้งรหัสผ่านแทน PIN, เปิด 2FA, เปิด HTTPS, ออกจากระบบทุกเครื่อง</li>
-      <li>แผงควบคุม → ผู้ใช้: สร้างบัญชีให้คนอื่น กำหนดว่าดูอย่างเดียวหรือแก้ไขได้ และเห็นโฟลเดอร์ไหน</li>
-      <li>ลืมรหัสผ่านหรือทำแอป 2FA หาย: เปิดแอปบนมือถือ แล้วล้างได้ในการ์ด "ความปลอดภัย"</li>
-    </ul>
-    <h3>ถ้าเข้า nexshare.local ไม่ได้</h3>
-    <ul>
-      <li>Windows 10/11, macOS, iPhone และ Linux ส่วนใหญ่รองรับชื่อ .local อยู่แล้ว ส่วน Android บางรุ่นยังไม่รองรับ ให้ใช้ลิงก์ IP แทน</li>
-      <li>Wi-Fi สาธารณะหรือเราเตอร์ที่เปิด AP/Client isolation จะกันไม่ให้เครื่องคุยกันได้</li>
+      <li>แผงควบคุม → ความปลอดภัย: ตั้งรหัสผ่านแทน PIN, เปิด 2FA, เปิด HTTPS (รองรับทั้ง LAN IP และ Tailscale IP), ออกจากระบบทุกเครื่อง</li>
+      <li>แผงควบคุม → ผู้ใช้: สร้างบัญชีให้คนอื่น กำหนดสิทธิ์ โฟลเดอร์ที่อนุญาต และตั้งโควตาพื้นที่เก็บข้อมูลสูงสุด</li>
+      <li>แผงควบคุม → บันทึกกิจกรรม: ตรวจสอบประวัติการเข้าสู่ระบบ อัปโหลด ดาวน์โหลด ลบไฟล์ และการแชร์</li>
     </ul>` }));
 }

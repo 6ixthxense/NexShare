@@ -45,7 +45,7 @@ public final class IntegrationTests {
         public void handle(HttpServer.Request req, HttpServer.Response res) throws IOException {
             String p = req.path;
             if (WebDav.matches(p)) { dav.handle(req, res); return; }
-            if (p.startsWith("/s/")) { Shares.get(ctx).serve(req, res); return; }
+            if (p.startsWith("/s/") || p.startsWith("/r/")) { Shares.get(ctx).serve(req, res); return; }
             if (!Auth.sameOrigin(req)) { res.error(403, "cross-origin request blocked"); return; }
             if (p.equals("/api/login")) { auth.login(req, res); return; }
             if (p.equals("/api/session")) { JSONObject o = new JSONObject(); auth.sessionInfo(req, o); res.json(200, o.toString()); return; }
@@ -346,6 +346,47 @@ public final class IntegrationTests {
             SessionStore.get(ctx).revokeUser("kid");
             eq(401, req("GET", "/api/roots", c).status);
         });
+        test("resumable upload: chunked/interrupted upload resumes from offset", () -> {
+            String c = login("", pin);
+            String dir = enc(storage + "/Documents");
+            JSONObject st0 = req("GET", "/api/upload/status?path=" + dir + "&name=big.bin&size=11", c).json();
+            eq(0L, st0.getLong("offset"));
+            // Send first 5 bytes ("hello") of an 11-byte file
+            Resp r1 = req("POST", "/api/upload?path=" + dir + "&name=big.bin&offset=0&total=11&resumable=1", c, "hello".getBytes(StandardCharsets.UTF_8));
+            eq(200, r1.status);
+            check(r1.json().getBoolean("partial") && r1.json().getLong("offset") == 5L, r1.text());
+            // Query status: should report offset=5
+            JSONObject st1 = req("GET", "/api/upload/status?path=" + dir + "&name=big.bin&size=11", c).json();
+            eq(5L, st1.getLong("offset"));
+            // Wrong offset returns 409 with current offset
+            Resp mismatch = req("POST", "/api/upload?path=" + dir + "&name=big.bin&offset=2&total=11&resumable=1", c, "x".getBytes(StandardCharsets.UTF_8));
+            eq(409, mismatch.status);
+            eq(5L, mismatch.json().getLong("offset"));
+            // Send remaining 6 bytes (" world") at offset=5
+            Resp r2 = req("POST", "/api/upload?path=" + dir + "&name=big.bin&offset=5&total=11&resumable=1", c, " world".getBytes(StandardCharsets.UTF_8));
+            eq(200, r2.status);
+            eq(11L, r2.json().getLong("size"));
+            eq("hello world", read(new File(storage, "Documents/big.bin")));
+            check(!Storage.partialFile(new File(storage, "Documents"), "big.bin").exists(), ".nexpart cleaned up");
+            new File(storage, "Documents/big.bin").delete();
+        });
+        test("per-user storage quota enforced on upload and copy", () -> {
+            File qDir = new File(storage, "QuotaBox");
+            qDir.mkdirs();
+            Users.get(ctx).save("q_user", Users.ROLE_RW, java.util.Collections.singletonList(qDir.getPath()), "quotapass1", 10L);
+            try {
+                String qc = login("q_user", "quotapass1");
+                eq(200, req("POST", "/api/upload?path=" + enc(qDir.getPath()) + "&name=ok.txt", qc, "123456".getBytes(StandardCharsets.UTF_8)).status);
+                Resp over = req("POST", "/api/upload?path=" + enc(qDir.getPath()) + "&name=too_big.txt", qc, "123456".getBytes(StandardCharsets.UTF_8));
+                eq(507, over.status);
+                eq("quota_exceeded", over.json().getString("error"));
+                Resp copyOver = post("/api/copy?dst=" + enc(qDir.getPath()) + "&p=" + enc(new File(qDir, "ok.txt").getPath()), qc, null);
+                eq(507, copyOver.status);
+            } finally {
+                Users.get(ctx).delete("q_user");
+                Storage.deleteRec(qDir);
+            }
+        });
     }
 
     static void trashTests() throws Exception {
@@ -449,6 +490,35 @@ public final class IntegrationTests {
             Users.get(ctx).delete("mom");
             eq(404, req("GET", "/s/" + id, null).status);
             Users.get(ctx).save("mom", Users.ROLE_RO, java.util.Collections.singletonList(new File(storage, "DCIM").getPath()), "momsecret1");
+        });
+        test("file request link allows unauthenticated uploads without exposing existing folder files", () -> {
+            String c = login("", pin);
+            File dropDir = new File(storage, "Documents/sub");
+            JSONObject s = post("/api/share/create", c, new JSONObject()
+                .put("path", dropDir.getPath())
+                .put("mode", "request")
+                .put("label", "ส่งการบ้าน")
+                .toString()).json();
+            String id = s.getString("id");
+            eq("request", s.getString("mode"));
+            Resp page = req("GET", "/r/" + id, null);
+            eq(200, page.status);
+            check(page.text().contains("ส่งการบ้าน") && !page.text().contains("a.txt"), "request page should not list existing files");
+            // Cannot download existing files from a request link
+            eq(404, req("GET", "/s/" + id + "/f?p=a.txt", null).status);
+            // Public upload into the folder works without session cookie
+            Resp up = req("POST", "/s/" + id + "/upload?name=guest.txt", null, "from guest".getBytes(StandardCharsets.UTF_8));
+            eq(200, up.status);
+            eq("from guest", read(new File(dropDir, "guest.txt")));
+            new File(dropDir, "guest.txt").delete();
+        });
+        test("audit log records login, upload, delete, share creation, and file request uploads", () -> {
+            JSONArray logs = AuditLog.list(ctx, 100, null, null);
+            check(logs.length() >= 5, "audit log entries recorded");
+            JSONArray reqUploads = AuditLog.list(ctx, 20, "request_upload", null);
+            check(reqUploads.length() >= 1, "request_upload logged");
+            JSONArray logins = AuditLog.list(ctx, 20, "login", null);
+            check(logins.length() >= 1, "login logged");
         });
     }
 

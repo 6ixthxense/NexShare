@@ -47,7 +47,53 @@ const API_ERRORS = {
   'not allowed for this user': 'บัญชีนี้ไม่มีสิทธิ์เข้าถึงโฟลเดอร์นี้',
   'cross-origin request blocked': 'คำขอถูกบล็อก (ต่างโดเมน)',
   locked: 'ใส่ผิดหลายครั้ง กรุณารอสักครู่แล้วลองใหม่',
+  quota_exceeded: 'พื้นที่เกินโควตาที่กำหนดไว้สำหรับบัญชีนี้',
 };
+
+const errorHistory = [];
+
+/**
+ * Displays an on-screen error banner so any runtime or action failure (especially on mobile/iPhone)
+ * is visible and can be screenshotted or copied immediately instead of failing silently.
+ */
+function reportError(context, err) {
+  if (err && (err.cancelled || err.status === 401)) return;
+  const msg = err instanceof Error ? (err.message || String(err)) : String(err || 'Unknown error');
+  const stack = err && err.stack ? String(err.stack).split('\n').slice(0, 4).join('\n') : '';
+  const detail = (context ? `[${context}] ` : '') + msg + (stack && !stack.includes(msg) ? '\n' + stack : '');
+  errorHistory.push({ ts: Date.now(), context, msg, detail });
+  if (!document.body) return;
+  let banner = $('#errorBanner');
+  if (!banner) {
+    banner = el('div', { id: 'errorBanner', class: 'error-banner' });
+    document.body.append(banner);
+  }
+  const textEl = el('pre', { class: 'error-banner-text', text: detail });
+  fill(banner,
+    el('div', { class: 'error-banner-head' },
+      el('strong', { text: '⚠ เกิดข้อผิดพลาดบนหน้าเว็บ' }),
+      el('div', { class: 'error-banner-actions' },
+        el('button', {
+          class: 'btn sm', text: 'คัดลอกข้อผิดพลาด',
+          onclick: async () => { await copyText(detail); toast('คัดลอกข้อความผิดพลาดแล้ว'); },
+        }),
+        el('button', { class: 'btn sm', text: 'ปิด', onclick: () => banner.remove() })
+      )
+    ),
+    textEl
+  );
+}
+
+window.addEventListener('error', ev => {
+  const loc = ev.filename ? `${ev.filename.split('/').pop()}:${ev.lineno || 0}` : 'window.onerror';
+  reportError(loc, ev.error || ev.message || 'Script error');
+});
+
+window.addEventListener('unhandledrejection', ev => {
+  const reason = ev.reason;
+  if (reason && (reason.cancelled || reason.status === 401)) return;
+  reportError('Promise', reason || 'Unhandled rejection');
+});
 
 /**
  * Calls the JSON API. A 403 "sudo_required" (root tools, security settings) asks the user to
@@ -148,8 +194,11 @@ const Sudo = {
 
 async function copyText(text) {
   try { await navigator.clipboard.writeText(text); return true; } catch { /* insecure context */ }
-  const t = el('textarea', { style: { position: 'fixed', opacity: 0 } }, text);
-  document.body.append(t); t.select();
+  const t = el('textarea', { style: { position: 'fixed', top: '0', left: '0', width: '1px', height: '1px', opacity: '0' } }, text);
+  document.body.append(t);
+  t.focus();
+  t.select();
+  try { t.setSelectionRange(0, text.length); } catch { /* ignore */ }
   let ok = false;
   try { ok = document.execCommand('copy'); } catch { /* ignore */ }
   t.remove();
@@ -188,7 +237,7 @@ for (const [k, list] of Object.entries({
   video: 'mp4 m4v webm mkv 3gp mov avi',
   audio: 'mp3 m4a aac ogg opus wav flac amr',
   pdf: 'pdf',
-  text: 'txt log md csv json xml html htm css js ini conf yml yaml srt',
+  text: 'txt log md markdown csv tsv json xml html htm css js mjs ts tsx jsx py java c cpp h cs go rs rb php sh ps1 sql ini conf yml yaml toml gradle kt swift dart srt vtt',
   archive: 'zip rar 7z tar gz bz2 xz',
   apk: 'apk xapk apks',
   doc: 'doc docx odt rtf',
@@ -237,7 +286,19 @@ function menu(items, x, y) {
     if (it === '-') { m.append(el('hr')); continue; }
     m.append(el('button', {
       class: it.danger ? 'danger' : null, disabled: it.disabled,
-      onclick: () => { closeMenu(); it.run(); },
+      onclick: e => {
+        e.stopPropagation();
+        try {
+          // Run handler BEFORE removing the button from DOM so WebKit/iOS Safari preserves
+          // transient user activation when triggering <input type="file">.click().
+          const res = it.run();
+          if (res && typeof res.catch === 'function') res.catch(err => reportError(it.label, err));
+        } catch (err) {
+          reportError(it.label, err);
+        } finally {
+          closeMenu();
+        }
+      },
     }, it.ico ? icon(it.ico) : null, it.label));
   }
   document.body.append(m);
@@ -250,7 +311,7 @@ function menuAt(btn, items) { const r = btn.getBoundingClientRect(); menu(items,
 
 let openPop = null;
 function closePop() { if (openPop) { openPop.el.remove(); openPop.btn && openPop.btn.classList.remove('active'); openPop = null; } }
-document.addEventListener('mousedown', e => {
+document.addEventListener('pointerdown', e => {
   if (openMenuEl && !openMenuEl.contains(e.target)) closeMenu();
   if (openPop && !openPop.el.contains(e.target) && !(openPop.btn && openPop.btn.contains(e.target))) closePop();
 });
@@ -418,7 +479,7 @@ class Win {
     const x = Math.max(10, Math.min(130 + n * 32, vw - w - 10));
     const y = Math.max(54, Math.min(64 + n * 28, vh - h - 10));
     this.body = el('div', { class: 'win-body' });
-    this.maxBtn = el('button', { class: 'win-btn', title: 'ขยาย', onclick: () => this.toggleMax() }, icon('max'));
+    this.maxBtn = el('button', { class: 'win-btn max-btn', title: 'ขยาย', onclick: () => this.toggleMax() }, icon('max'));
     this.titleEl = el('div', { class: 'title', text: app.name });
     this.bar = el('div', { class: 'titlebar', ondblclick: e => { if (!e.target.closest('button')) this.toggleMax(); } },
       appIco(app.ico), this.titleEl,
@@ -435,6 +496,7 @@ class Win {
   }
   setTitle(t) { this.titleEl.textContent = t; }
   focus() {
+    if (WM.active === this && !this.el.classList.contains('inactive') && !this.minimized) return;
     if (WM.active && WM.active !== this) WM.active.el.classList.add('inactive');
     this.el.classList.remove('inactive');
     this.el.style.zIndex = ++WM.z;
@@ -574,8 +636,7 @@ function renderDesktop() {
     if (groupApps && !groupApps.length) continue;
     const badge = it.badge ? it.badge() : 0;
     const btn = el('button', { class: 'desk-icon' }, appIco(app ? app.ico : it.ico), el('div', { class: 'lbl', text: app ? app.name : it.group }), badge ? el('span', { class: 'badge', text: badge }) : null);
-    btn.addEventListener(innerWidth <= 760 ? 'click' : 'dblclick', () => app ? openApp(it.app) : groupPopover(btn, it));
-    if (!app) btn.addEventListener('click', () => groupPopover(btn, it));
+    btn.addEventListener('click', () => app ? openApp(it.app) : groupPopover(btn, it));
     d.append(btn);
   }
 }

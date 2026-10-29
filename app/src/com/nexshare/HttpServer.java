@@ -6,9 +6,13 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.PushbackInputStream;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketAddress;
+import java.net.SocketException;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
@@ -28,6 +32,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import javax.net.ssl.SSLServerSocketFactory;
+import javax.net.ssl.SSLSocket;
+import javax.net.ssl.SSLSocketFactory;
 
 /**
  * Minimal HTTP/1.1 server with keep-alive, chunked request bodies, 100-continue,
@@ -413,6 +419,7 @@ public class HttpServer {
     private final Handler handler;
     private final boolean tls;
     private ServerSocket server;
+    private SSLSocketFactory sslSocketFactory;
     private ThreadPoolExecutor pool;
     private volatile boolean running;
     public final AtomicInteger activeConnections = new AtomicInteger();
@@ -429,12 +436,23 @@ public class HttpServer {
     }
 
     public void start(int port) throws IOException {
-        start(port, null);
+        start(port, (SSLSocketFactory) null);
     }
 
-    /** Starts listening; with a non-null factory the server speaks HTTPS. */
+    /** Starts listening; with a non-null factory the server speaks HTTPS and redirects plain HTTP on the same port. */
+    public void start(int port, SSLSocketFactory ssl) throws IOException {
+        this.sslSocketFactory = ssl;
+        startInternal(port, null);
+    }
+
+    /** Legacy overload for SSLServerSocketFactory; binds a ServerSocket when possible or uses the factory directly. */
     public void start(int port, SSLServerSocketFactory ssl) throws IOException {
-        server = ssl != null ? ssl.createServerSocket() : new ServerSocket();
+        this.sslSocketFactory = null;
+        startInternal(port, ssl);
+    }
+
+    private void startInternal(int port, SSLServerSocketFactory sslServerFactory) throws IOException {
+        server = sslServerFactory != null ? sslServerFactory.createServerSocket() : new ServerSocket();
         server.setReuseAddress(true);
         server.bind(new InetSocketAddress(port), 64);
         // Bounded pool: a flood of connections can't exhaust memory with threads.
@@ -498,14 +516,115 @@ public class HttpServer {
         if (pool != null) pool.shutdownNow();
     }
 
-    void serve(Socket s) {
+    /**
+     * When a user types http://host:8443 in their browser, the first byte is an ASCII HTTP verb
+     * ('G', 'H', 'P', 'O', etc.) instead of a TLS handshake record (0x16). We read the request
+     * line and Host header and send an HTTP 301 redirect to https://host:8443<path>.
+     */
+    private void redirectHttpOnHttpsPort(InputStream in, OutputStream rawOut, String fallbackIp) throws IOException {
+        String line = readLine(in);
+        if (line == null || line.isEmpty()) return;
+        String[] parts = line.split(" ");
+        String target = parts.length >= 2 ? parts[1] : "/";
+        if (target.startsWith("http://") || target.startsWith("https://")) {
+            int slash = target.indexOf('/', target.indexOf("//") + 2);
+            target = slash < 0 ? "/" : target.substring(slash);
+        }
+        if (!target.startsWith("/")) target = "/" + target;
+        String host = null;
+        String h;
+        int count = 0;
+        while ((h = readLine(in)) != null && !h.isEmpty() && ++count <= 64) {
+            int c = h.indexOf(':');
+            if (c > 0 && h.substring(0, c).trim().equalsIgnoreCase("host")) {
+                host = h.substring(c + 1).trim();
+            }
+        }
+        int p = port();
+        String hostHeader = sanitizeHostWithPort(host, fallbackIp, p);
+        String loc = "https://" + hostHeader + target;
+        String resp = "HTTP/1.1 301 Moved Permanently\r\n"
+            + "Server: NexShare\r\n"
+            + "Location: " + loc + "\r\n"
+            + "Content-Length: 0\r\n"
+            + "Connection: close\r\n\r\n";
+        rawOut.write(resp.getBytes(StandardCharsets.US_ASCII));
+        rawOut.flush();
+    }
+
+    private static String sanitizeHostWithPort(String hostHeader, String fallbackIp, int httpsPort) {
+        String h = hostHeader == null ? "" : hostHeader.trim();
+        if (h.isEmpty() || !h.matches("[A-Za-z0-9.\\-\\[\\]:]+")) {
+            h = fallbackIp == null || fallbackIp.isEmpty() ? "127.0.0.1" : fallbackIp;
+        }
+        // Strip existing port if not IPv6 bracketed
+        if (h.startsWith("[")) {
+            int close = h.indexOf(']');
+            if (close > 0) h = h.substring(0, close + 1);
+        } else {
+            int colon = h.indexOf(':');
+            if (colon > 0) h = h.substring(0, colon);
+        }
+        return httpsPort > 0 && httpsPort != 443 ? h + ":" + httpsPort : h;
+    }
+
+    /** Delegating socket that exposes a PushbackInputStream so TLS can read the peeked first byte. */
+    private static final class PeekSocket extends Socket {
+        private final Socket delegate;
+        private final InputStream in;
+
+        PeekSocket(Socket delegate, InputStream in) {
+            this.delegate = delegate;
+            this.in = in;
+        }
+
+        @Override public InputStream getInputStream() { return in; }
+        @Override public OutputStream getOutputStream() throws IOException { return delegate.getOutputStream(); }
+        @Override public InetAddress getInetAddress() { return delegate.getInetAddress(); }
+        @Override public InetAddress getLocalAddress() { return delegate.getLocalAddress(); }
+        @Override public int getPort() { return delegate.getPort(); }
+        @Override public int getLocalPort() { return delegate.getLocalPort(); }
+        @Override public SocketAddress getRemoteSocketAddress() { return delegate.getRemoteSocketAddress(); }
+        @Override public SocketAddress getLocalSocketAddress() { return delegate.getLocalSocketAddress(); }
+        @Override public void setSoTimeout(int timeout) throws SocketException { delegate.setSoTimeout(timeout); }
+        @Override public int getSoTimeout() throws SocketException { return delegate.getSoTimeout(); }
+        @Override public void setTcpNoDelay(boolean on) throws SocketException { delegate.setTcpNoDelay(on); }
+        @Override public boolean getTcpNoDelay() throws SocketException { return delegate.getTcpNoDelay(); }
+        @Override public boolean isConnected() { return delegate.isConnected(); }
+        @Override public boolean isBound() { return delegate.isBound(); }
+        @Override public boolean isClosed() { return delegate.isClosed(); }
+        @Override public boolean isInputShutdown() { return delegate.isInputShutdown(); }
+        @Override public boolean isOutputShutdown() { return delegate.isOutputShutdown(); }
+        @Override public void shutdownInput() throws IOException { delegate.shutdownInput(); }
+        @Override public void shutdownOutput() throws IOException { delegate.shutdownOutput(); }
+        @Override public synchronized void close() throws IOException { delegate.close(); }
+    }
+
+    void serve(Socket rawSock) {
         activeConnections.incrementAndGet();
+        Socket s = rawSock;
         try {
             s.setSoTimeout(60000);
             s.setTcpNoDelay(true);
+            String remote = s.getInetAddress().getHostAddress();
+            if (sslSocketFactory != null) {
+                PushbackInputStream pb = new PushbackInputStream(s.getInputStream(), 1);
+                int first = pb.read();
+                if (first < 0) return;
+                pb.unread(first);
+                // TLS record types start with 0x16 (Handshake) or 0x80 (SSLv2 ClientHello).
+                // Plain HTTP starts with an ASCII method ('G', 'P', 'H', 'O', 'D', etc.).
+                if (first != 0x16 && (first & 0x80) == 0) {
+                    redirectHttpOnHttpsPort(pb, s.getOutputStream(), s.getLocalAddress().getHostAddress());
+                    return;
+                }
+                SSLSocket sslSock = (SSLSocket) sslSocketFactory.createSocket(
+                    new PeekSocket(s, pb), remote, s.getPort(), true);
+                sslSock.setUseClientMode(false);
+                s = sslSock;
+            }
             InputStream in = new BufferedInputStream(s.getInputStream(), 65536);
             OutputStream out = new BufferedOutputStream(s.getOutputStream(), 65536);
-            String remote = s.getInetAddress().getHostAddress();
             while (running) {
                 String line = readLine(in);
                 if (line == null) break;

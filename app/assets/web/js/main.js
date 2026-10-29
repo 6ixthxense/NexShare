@@ -20,13 +20,17 @@ const Auth = {
     const owner = !user || user.toLowerCase() === 'admin';
     const pinMode = owner && !Auth.adminPassword;
     const pin = $('#pin');
-    pin.placeholder = pinMode ? '••••••' : 'รหัสผ่าน';
+    pin.placeholder = pinMode ? '••••••' : t('รหัสผ่าน', 'Password');
     pin.inputMode = pinMode ? 'numeric' : 'text';
     pin.maxLength = pinMode ? 6 : 128;
     pin.autocomplete = pinMode ? 'off' : 'current-password';
     $('#otpRow').classList.toggle('hidden', !(owner && Auth.otp));
-    $('#loginServer').textContent = (Auth.server ? Auth.server + ' · ' : '')
-      + (pinMode ? 'ใส่ PIN ที่แสดงในแอปบนมือถือ' : owner ? 'ใส่รหัสผ่านผู้ดูแล' : 'ใส่รหัสผ่านของบัญชีนี้');
+    const msg = pinMode
+      ? t('ใส่ PIN ที่แสดงในแอปบนมือถือ', 'Enter the PIN shown in the mobile app')
+      : owner
+      ? t('ใส่รหัสผ่านผู้ดูแล', 'Enter administrator password')
+      : t('ใส่รหัสผ่านของบัญชีนี้', 'Enter password for this account');
+    $('#loginServer').textContent = (Auth.server ? Auth.server + ' · ' : '') + msg;
   },
   async logout() {
     try { await api('logout', null, { method: 'POST' }); } catch { /* ignore */ }
@@ -94,12 +98,17 @@ $('#infoBtn').onclick = () => openApp('control');
 $('#userBtn').onclick = e => menuAt(e.currentTarget, [
   { label: (State.user === 'admin' ? 'ผู้ดูแล' : State.user) + ' · ' + ROLE_LABEL[State.role], disabled: true, run: () => {} },
   { label: Stats.last ? Stats.last.model : 'NexShare', ico: 'info', run: () => openApp('control') },
+  { label: I18n.theme === 'dark' ? 'โหมดสว่าง' : 'โหมดมืด', run: () => I18n.toggleTheme() },
+  { label: I18n.lang === 'en' ? 'ภาษาไทย (TH)' : 'English (EN)', run: () => I18n.toggleLang() },
   Auth.pinRequired ? { label: 'ออกจากระบบ', ico: 'logout', run: () => Auth.logout() } : null,
 ]);
 $('#notifBtn').onclick = e => {
   const items = State.notes.length ? State.notes.slice(0, 8).map(n => ({ label: n.text, run: () => {} })) : [{ label: 'ยังไม่มีการแจ้งเตือน', disabled: true, run: () => {} }];
   menuAt(e.currentTarget, items);
 };
+document.querySelectorAll('.theme-toggle-btn').forEach(btn => { btn.onclick = () => I18n.toggleTheme(); });
+document.querySelectorAll('.lang-toggle-btn').forEach(btn => { btn.onclick = () => { I18n.toggleLang(); Auth.renderForm(); }; });
+
 document.addEventListener('dragover', e => e.preventDefault());
 document.addEventListener('drop', e => { if (!e.target.closest('.fs-list')) { e.preventDefault(); toast('เปิด File Station แล้ววางไฟล์ในหน้าต่างเพื่ออัปโหลด'); } });
 addEventListener('resize', () => { renderDesktop(); });
@@ -159,6 +168,7 @@ function registerPwa() {
 }
 
 (async function boot() {
+  if (typeof I18n !== 'undefined') I18n.init();
   for (const n of document.querySelectorAll('[data-ico]')) n.innerHTML = APP_ICO[n.dataset.ico];
   renderDesktop();
   Taskbar.render();

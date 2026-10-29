@@ -10,6 +10,9 @@ on:
 permissions:
   contents: write # attach APKs to releases on version tags
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -17,10 +20,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: '17' }
-      - name: Unit tests (HTTP server, crypto, TLS, path safety)
+      - name: Unit & integration tests (HTTP server, crypto, TLS, resumable upload, quota, audit, file request)
         run: ./test/run-tests.sh
       - uses: actions/setup-node@v4
-        with: { node-version: '20' }
+        with: { node-version: '22' }
       - name: Syntax-check web UI
         run: for f in app/assets/web/js/*.js app/assets/web/sw.js; do node --check "$f"; done
 
@@ -30,11 +33,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: '3.12' }
-      - name: Browser smoke tests (headless Chromium + mock backend)
+      - name: Browser smoke tests (headless Chromium + WebKit + mock backend)
+        env:
+          CI: 'true'
         run: |
           sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
           pip install -q playwright
-          python -m playwright install --with-deps chromium
+          python -m playwright install --with-deps chromium webkit
           python test/ui/ui_test.py
       - uses: actions/upload-artifact@v4
         if: always()
@@ -80,3 +85,44 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" dist/*.apk --title "$GITHUB_REF_NAME" --generate-notes || gh release upload "$GITHUB_REF_NAME" dist/*.apk --clobber
+
+  emulator:
+    needs: [apk]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+      - uses: actions/download-artifact@v4
+        with:
+          name: NexShare-apks
+          path: dist
+      - name: Enable KVM and patch sdkmanager for legacy 'tools' package
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          for sm in "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager; do
+            if [ -x "$sm" ] && [ ! -f "$sm.real" ]; then
+              sudo mv "$sm" "$sm.real"
+              sudo tee "$sm" >/dev/null <<'EOS'
+          #!/usr/bin/env bash
+          args=()
+          for a in "$@"; do
+            [ "$a" = "tools" ] && continue
+            args+=("$a")
+          done
+          [ "${#args[@]}" -eq 0 ] && exit 0
+          exec "$0.real" "${args[@]}"
+          EOS
+              sudo chmod +x "$sm"
+            fi
+          done
+      - name: Run APK on Android Emulator and test HTTP + HTTPS APIs
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          target: default
+          arch: x86_64
+          disable-animations: true
+          script: ./test/emulator-test.sh
