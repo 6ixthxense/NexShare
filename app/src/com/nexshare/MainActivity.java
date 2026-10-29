@@ -112,7 +112,7 @@ public class MainActivity extends Activity {
         pinView = text(this, "", 34, 0xFF1D2733, true);
         pinView.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
         pinView.setLetterSpacing(0.15f);
-        pinView.setPadding(0, dp(this, 8), 0, dp(4));
+        pinView.setPadding(0, dp(this, 8), 0, dp(this, 4));
         pinCard.addView(pinView);
         pinNote = text(this, "", 12, 0xFF8A96A3, false);
         pinCard.addView(pinNote);
@@ -124,7 +124,7 @@ public class MainActivity extends Activity {
         LinearLayout secCard = card(this, body);
         secCard.addView(text(this, "ความปลอดภัย", 15, 0xFF1D2733, true));
         secState = text(this, "", 13, 0xFF4A5663, false);
-        secState.setPadding(0, dp(this, 6), 0, dp(6));
+        secState.setPadding(0, dp(this, 6), 0, dp(this, 6));
         secCard.addView(secState);
         clearPwBtn = button(this, secCard, "ล้างรหัสผ่านผู้ดูแล (กลับไปใช้ PIN)", () -> confirm(this,
             "ล้างรหัสผ่านผู้ดูแล?", "ผู้ดูแลจะกลับไปเข้าสู่ระบบด้วย PIN และทุกเครื่องจะถูกออกจากระบบ",
@@ -145,7 +145,7 @@ public class MainActivity extends Activity {
         bootSwitch = new Switch(this);
         bootSwitch.setText("เปิดแชร์อัตโนมัติเมื่อเปิดเครื่อง");
         bootSwitch.setTextSize(15);
-        bootSwitch.setPadding(0, dp(this, 8), 0, dp(4));
+        bootSwitch.setPadding(0, dp(this, 8), 0, dp(this, 4));
         bootSwitch.setChecked(Settings.startOnBoot(this));
         bootSwitch.setOnCheckedChangeListener((v, on) -> Settings.setStartOnBoot(this, on));
         powerCard.addView(bootSwitch);
@@ -165,7 +165,7 @@ public class MainActivity extends Activity {
             : "จอจะติดเฉพาะตอนเปิดหน้าแอปนี้", 12, 0xFF8A96A3, false));
 
         batteryNote = text(this, "", 13, 0xFF4A5663, false);
-        batteryNote.setPadding(0, dp(this, 10), 0, dp(4));
+        batteryNote.setPadding(0, dp(this, 10), 0, dp(this, 4));
         powerCard.addView(batteryNote);
         batteryBtn = button(this, powerCard, "ยกเว้นการประหยัดแบตเตอรี่ (แนะนำ)", this::requestIgnoreBatteryOptimizations);
 
