@@ -125,46 +125,4 @@ jobs:
           target: default
           arch: x86_64
           disable-animations: true
-          script: |
-            adb wait-for-device
-            APK=$(ls dist/NexShare-v*.apk | grep -v root | head -n 1)
-            echo "Installing $APK ..."
-            if ! adb install -r -g "$APK"; then
-              echo "Repackaging APK without ARM-only native libs for x86_64 emulator..."
-              cp "$APK" /tmp/emu-unaligned.apk
-              zip -d /tmp/emu-unaligned.apk 'lib/*' || true
-              BT=$(ls -d "$ANDROID_HOME/build-tools/"* | tail -n 1)
-              "$BT/zipalign" -p -f 4 /tmp/emu-unaligned.apk /tmp/emu-aligned.apk
-              keytool -genkeypair -keystore /tmp/emu.keystore -alias emu -keyalg RSA -keysize 2048 -validity 10 -storepass android -keypass android -dname CN=NexShare
-              "$BT/apksigner" sign --ks /tmp/emu.keystore --ks-pass pass:android --out /tmp/emu.apk /tmp/emu-aligned.apk
-              adb install -r -g /tmp/emu.apk
-            fi
-            adb shell appops set com.nexshare MANAGE_EXTERNAL_STORAGE allow || true
-            adb shell am start -n com.nexshare/.MainActivity
-            sleep 2
-            adb shell am start-foreground-service -n com.nexshare/.ServerService || adb shell am startservice -n com.nexshare/.ServerService || true
-            adb forward tcp:8080 tcp:8080
-            adb forward tcp:8443 tcp:8443
-            for i in $(seq 1 30); do
-              if curl -sf http://127.0.0.1:8080/api/session > /tmp/session.json; then
-                break
-              fi
-              sleep 1
-            done
-            cat /tmp/session.json
-            grep -q '"pinRequired":true' /tmp/session.json
-            for i in $(seq 1 30); do
-              if curl -skf https://127.0.0.1:8443/api/session > /tmp/https_session.json; then
-                break
-              fi
-              sleep 1
-            done
-            echo "Testing plain HTTP -> HTTPS port 8443 redirect..."
-            REDIRECT=$(curl -sI http://127.0.0.1:8443/ | tr -d '\r')
-            echo "$REDIRECT"
-            echo "$REDIRECT" | grep -qi "301 Moved Permanently"
-            echo "$REDIRECT" | grep -qi "Location: https://127.0.0.1:8443/"
-            echo "Testing HTTPS on port 8443..."
-            cat /tmp/https_session.json
-            grep -q '"secure":true' /tmp/https_session.json
-            echo "Android Emulator end-to-end HTTP + HTTPS checks passed!"
+          script: ./test/emulator-test.sh
