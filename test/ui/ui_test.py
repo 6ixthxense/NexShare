@@ -57,12 +57,24 @@ try:
         ok('Tailscale IP shown in health widget', pg.inner_text('#hTs') == '100.88.1.2', pg.inner_text('#hTs'))
         pg.screenshot(path=os.path.join(OUT, '01-desktop.png'))
 
-        # Markdown preview test
+        # Markdown preview + built-in text editor test
         pg.locator('.fs-list [data-path$="/readme.md"]').first.dblclick()
         pg.wait_for_selector('#viewer .md-body', timeout=3000)
         ok('Markdown preview renders headings and formatting', 'NexShare Docs' in pg.inner_text('#viewer .md-body'))
+        pg.locator('#viewer .edit-file-btn').click()
+        pg.wait_for_selector('#viewer textarea.doc-editor', timeout=2000)
+        pg.fill('#viewer textarea.doc-editor', '# NexShare Docs\n\n- Edited in browser\n')
+        pg.locator('#viewer .save-file-btn').click()
+        pg.wait_for_selector('#viewer .md-body', timeout=3000)
+        ok('Built-in editor saves file via /api/write and updates preview', 'Edited in browser' in pg.inner_text('#viewer .md-body'))
         pg.keyboard.press('Escape')
         pg.wait_for_selector('#viewer.hidden', state='attached', timeout=2000)
+
+        # Quick Clipboard widget test
+        pg.fill('#clipIn', 'https://nexshare.local:8443/clip-test')
+        pg.click('#clipSendBtn')
+        pg.wait_for_timeout(300)
+        ok('Quick Clipboard widget sends and lists recent item', 'clip-test' in pg.inner_text('#clipList'))
 
         # Grid view tall thumbnail bounds check (must not overflow .pic or overlap .nm)
         pg.locator('.fs-list [data-path$="/DCIM"]').first.dblclick()
@@ -131,11 +143,14 @@ try:
         dels = [c for c in calls if c[1] == '/api/delete']
         ok('delete request without permanent flag', dels and 'permanent' not in dels[-1][2], dels[-1:])
 
-        # Control Panel tabs (now 5 tabs including Audit Log)
+        # Control Panel tabs (now 6 tabs including Storage Analyzer & Audit Log)
         pg.evaluate("openApp('control')")
         pg.wait_for_selector('.tabs .tab', timeout=3000)
         tabs = pg.locator('.tabs .tab').all_inner_texts()
-        ok('control panel has 5 tabs for admin (with Audit Log)', len(tabs) == 5, tabs)
+        ok('control panel has 6 tabs for admin (with Storage Analyzer & Audit Log)', len(tabs) == 6, tabs)
+        pg.locator('.tabs .tab', has_text='วิเคราะห์พื้นที่').click()
+        pg.wait_for_selector('.sa-bar', timeout=3000)
+        ok('storage analyzer tab shows category breakdown and largest files', 'b.mp4' in pg.inner_text('.cp') and 'DCIM' in pg.inner_text('.cp'))
         pg.locator('.tabs .tab', has_text='ความปลอดภัย').click()
         pg.wait_for_selector('.set-row', timeout=3000)
         ok('security tab warns about tunnel + PIN', pg.locator('.notice.warn').count() == 1)

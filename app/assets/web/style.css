@@ -866,3 +866,67 @@ table.files .col-more { width: 38px; padding: 0 4px; text-align: center; }
 [data-theme="dark"] .st-pill.error { background: #3d1a1e; color: #ff8f8f; }
 [data-theme="dark"] .pill.orange { background: #3b2813; color: #f6b667; }
 
+/* ---------- Phase 5-8: Editor, EXIF, Favorites, Clipboard, Photos Bar & Storage Analyzer ---------- */
+.doc-editor {
+  flex: 1; width: 100%; border: 0; outline: none; resize: none; padding: 16px 20px;
+  font: 13.5px/1.6 Consolas, "SFMono-Regular", Menlo, monospace;
+  background: var(--win-bg); color: var(--text); user-select: text; -webkit-user-select: text;
+}
+.btn.sm { height: 28px; padding: 0 10px; font-size: 12px; }
+.exif-pane {
+  width: 280px; background: rgba(16, 22, 31, .95); border-left: 1px solid rgba(255,255,255,.12);
+  padding: 16px; overflow-y: auto; color: #e6edf3; font-size: 12.5px; z-index: 2;
+}
+.exif-pane h4 { margin: 0 0 12px; font-size: 13.5px; color: #fff; }
+.exif-pane .kv dt { color: #9fb0c3; }
+.exif-pane .kv dd { color: #e6edf3; text-align: right; word-break: break-word; }
+.exif-pane a { color: #67b2ff; text-decoration: none; }
+.exif-pane a:hover { text-decoration: underline; }
+#viewer .v-body img { transition: transform .2s ease; }
+
+.ph-bar {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 8px 2px 4px;
+  border-bottom: 1px solid var(--line); margin-bottom: 6px;
+}
+.ph-bar .term-chip {
+  background: var(--side-bg); color: var(--text-2); border: 1px solid var(--line);
+}
+.ph-bar .term-chip.on {
+  background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600;
+}
+
+.fav-row { position: relative; }
+.fav-unpin {
+  margin-left: auto; border: 0; background: transparent; color: var(--text-3); cursor: pointer;
+  width: 20px; height: 20px; border-radius: 4px; font-size: 14px; line-height: 1; opacity: 0;
+}
+.fav-row:hover .fav-unpin { opacity: 1; }
+.fav-unpin:hover { background: rgba(0,0,0,.08); color: var(--danger); }
+
+.clip-in {
+  width: 100%; border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; resize: vertical;
+  font: 12.5px/1.45 inherit; background: var(--win-bg); color: var(--text); outline: none; margin-bottom: 6px;
+  user-select: text; -webkit-user-select: text;
+}
+.clip-in:focus { border-color: var(--accent); }
+.clip-actions { display: flex; gap: 6px; margin-bottom: 8px; }
+.clip-actions .btn { flex: 1; justify-content: center; }
+.clip-list { display: flex; flex-direction: column; gap: 4px; max-height: 120px; overflow-y: auto; }
+.clip-item {
+  font-size: 12px; padding: 5px 8px; border-radius: 6px; background: var(--side-bg);
+  color: var(--text-2); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  border: 1px solid transparent;
+}
+.clip-item:hover { border-color: var(--accent); color: var(--text); }
+
+.sa-bar {
+  display: flex; height: 16px; border-radius: 8px; overflow: hidden; background: var(--side-bg);
+  margin: 10px 0 12px; gap: 1px;
+}
+.sa-seg { height: 100%; min-width: 3px; transition: width .25s ease; }
+.sa-legend { display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 12.5px; }
+.sa-leg-item { display: flex; align-items: center; gap: 5px; }
+.sa-dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.sa-folders { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+
+

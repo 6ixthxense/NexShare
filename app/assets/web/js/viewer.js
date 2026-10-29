@@ -21,7 +21,60 @@ function highlightCodeLine(line) {
   return s;
 }
 
-function renderCodeView(text, ext) {
+function openTextEditor(entry, initialText, onSaved) {
+  const ta = el('textarea', { class: 'doc-editor', spellcheck: 'false' });
+  ta.value = initialText;
+  const status = el('span', { class: 'muted', text: `${initialText.split('\n').length} บรรทัด · ${fmtSize(new Blob([initialText]).size)}` });
+  ta.addEventListener('input', () => {
+    status.textContent = `${ta.value.split('\n').length} บรรทัด · ${fmtSize(new Blob([ta.value]).size)} (แก้ไขแล้ว)`;
+  });
+  const save = async () => {
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'กำลังบันทึก…';
+    try {
+      const updated = await api('write', { path: entry.path }, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+        body: ta.value,
+      });
+      entry.size = updated.size ?? new Blob([ta.value]).size;
+      entry.mtime = updated.mtime ?? Date.now();
+      toast('บันทึกไฟล์แล้ว');
+      window.dispatchEvent(new CustomEvent('nexshare:fs-change', { detail: { type: 'write', path: entry.path } }));
+      if (onSaved) onSaved(ta.value);
+    } catch (e) {
+      toast('บันทึกไม่สำเร็จ: ' + e.message);
+      saveBtn.disabled = false;
+      saveBtn.textContent = 'บันทึก (Ctrl+S)';
+    }
+  };
+  ta.addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+      e.preventDefault();
+      save();
+    } else if (e.key === 'Tab') {
+      e.preventDefault();
+      const s = ta.selectionStart, end = ta.selectionEnd;
+      ta.value = ta.value.slice(0, s) + '  ' + ta.value.slice(end);
+      ta.selectionStart = ta.selectionEnd = s + 2;
+    }
+  });
+  const saveBtn = el('button', { class: 'btn sm primary save-file-btn', text: 'บันทึก (Ctrl+S)', onclick: save });
+  const cancelBtn = el('button', { class: 'btn sm', text: 'ยกเลิก', onclick: () => onSaved && onSaved(initialText) });
+  setTimeout(() => ta.focus(), 30);
+  return el('div', { class: 'doc-preview' },
+    el('div', { class: 'doc-bar' },
+      el('strong', { text: 'แก้ไข: ' + entry.name }),
+      status,
+      el('span', { class: 'grow' }),
+      cancelBtn,
+      saveBtn
+    ),
+    ta
+  );
+}
+
+function renderCodeView(text, ext, entry, onReplace) {
   const lines = text.replace(/\r\n/g, '\n').split('\n');
   const table = el('table', { class: 'code-table' });
   const maxLines = Math.min(lines.length, 5000);
@@ -29,9 +82,15 @@ function renderCodeView(text, ext) {
     const codeTd = el('td', { class: 'code-line', html: highlightCodeLine(lines[i]) || ' ' });
     table.append(el('tr', null, el('td', { class: 'code-ln', text: i + 1 }), codeTd));
   }
+  const editBtn = State.canWrite && entry ? el('button', {
+    class: 'btn sm edit-file-btn', text: 'แก้ไข',
+    onclick: () => onReplace && onReplace(openTextEditor(entry, text, newText => onReplace(renderCodeView(newText, ext, entry, onReplace)))),
+  }) : null;
   return el('div', { class: 'doc-preview code-preview' },
     el('div', { class: 'doc-bar' },
       el('span', { class: 'muted', text: `${ext.toUpperCase()} · ${lines.length} บรรทัด` }),
+      el('span', { class: 'grow' }),
+      editBtn,
       el('button', { class: 'btn sm', text: 'คัดลอกโค้ด', onclick: async () => { await copyText(text); toast('คัดลอกโค้ดแล้ว'); } })
     ),
     el('div', { class: 'code-scroll' }, table)
@@ -111,7 +170,7 @@ function renderMarkdownHtml(md) {
   return out;
 }
 
-function renderMarkdownView(text) {
+function renderMarkdownView(text, entry, onReplace) {
   const content = el('div', { class: 'md-body', html: renderMarkdownHtml(text) });
   const raw = el('pre', { class: 'md-raw hidden', text });
   let showRaw = false;
@@ -124,13 +183,17 @@ function renderMarkdownView(text) {
       toggleBtn.textContent = showRaw ? 'ดูหน้าพรีวิว' : 'ดูโค้ดต้นฉบับ';
     },
   });
+  const editBtn = State.canWrite && entry ? el('button', {
+    class: 'btn sm primary edit-file-btn', text: 'แก้ไข',
+    onclick: () => onReplace && onReplace(openTextEditor(entry, text, newText => onReplace(renderMarkdownView(newText, entry, onReplace)))),
+  }) : null;
   return el('div', { class: 'doc-preview' },
-    el('div', { class: 'doc-bar' }, el('span', { class: 'muted', text: 'Markdown' }), toggleBtn),
+    el('div', { class: 'doc-bar' }, el('span', { class: 'muted', text: 'Markdown' }), el('span', { class: 'grow' }), editBtn, toggleBtn),
     content, raw
   );
 }
 
-function renderCsvView(text, sep = ',') {
+function renderCsvView(text, sep = ',', entry = null, onReplace = null) {
   const rows = text.replace(/\r\n/g, '\n').split('\n').filter(r => r.length > 0).slice(0, 500);
   const tbl = el('table', { class: 'md-table' });
   rows.forEach((r, idx) => {
@@ -138,9 +201,31 @@ function renderCsvView(text, sep = ',') {
     const tr = el('tr', null, ...cols.map(c => el(idx === 0 ? 'th' : 'td', { text: c.replace(/^"|"$/g, '') })));
     tbl.append(tr);
   });
+  const editBtn = State.canWrite && entry ? el('button', {
+    class: 'btn sm edit-file-btn', text: 'แก้ไขข้อความ',
+    onclick: () => onReplace && onReplace(openTextEditor(entry, text, newText => onReplace(renderCsvView(newText, sep, entry, onReplace)))),
+  }) : null;
   return el('div', { class: 'doc-preview' },
-    el('div', { class: 'doc-bar' }, el('span', { class: 'muted', text: `ตารางข้อมูล (${rows.length} แถว)` })),
+    el('div', { class: 'doc-bar' }, el('span', { class: 'muted', text: `ตารางข้อมูล (${rows.length} แถว)` }), el('span', { class: 'grow' }), editBtn),
     el('div', { class: 'doc-scroll' }, tbl)
+  );
+}
+
+function renderPlainTextView(text, entry, onReplace) {
+  const pre = el('pre', { text });
+  if (!State.canWrite || !entry) return pre;
+  const editBtn = el('button', {
+    class: 'btn sm primary edit-file-btn', text: 'แก้ไข',
+    onclick: () => onReplace && onReplace(openTextEditor(entry, text, newText => onReplace(renderPlainTextView(newText, entry, onReplace)))),
+  });
+  return el('div', { class: 'doc-preview' },
+    el('div', { class: 'doc-bar' },
+      el('span', { class: 'muted', text: `ข้อความ (${text.split('\n').length} บรรทัด)` }),
+      el('span', { class: 'grow' }),
+      editBtn,
+      el('button', { class: 'btn sm', text: 'คัดลอก', onclick: async () => { await copyText(text); toast('คัดลอกแล้ว'); } })
+    ),
+    pre
   );
 }
 
@@ -283,31 +368,62 @@ async function renderOfficePreview(url, entry) {
 // ---------------------------------------------------------------- viewer
 
 const Viewer = {
-  open(entry, list) {
+  deg: 0,
+  slideTimer: null,
+  open(entry, list, opts = {}) {
     this.list = list && list.length ? list : [entry];
     this.i = Math.max(0, this.list.findIndex(e => e.path === entry.path));
     if (!this.el) this.build();
+    this.stopSlideshow();
     this.el.classList.remove('hidden');
     this.show();
+    if (opts.slideshow) this.toggleSlideshow(true);
+  },
+  openEditor(entry, initialText = '') {
+    this.list = [entry];
+    this.i = 0;
+    this.cur = entry;
+    if (!this.el) this.build();
+    this.stopSlideshow();
+    this.el.classList.remove('hidden');
+    this.title.textContent = `${entry.name}  ·  แก้ไขไฟล์`;
+    this.prev.classList.add('hidden');
+    this.next.classList.add('hidden');
+    for (const b of [this.rotateBtn, this.slideBtn, this.exifBtn]) b.classList.add('hidden');
+    this.exifPane.classList.add('hidden');
+    const replace = node => this.body.replaceChildren(node);
+    replace(openTextEditor(entry, initialText, () => this.show()));
   },
   build() {
     this.title = el('div', { class: 'v-title' });
     this.body = el('div', { class: 'v-body' });
     this.prev = el('button', { class: 'v-nav prev', onclick: () => this.step(-1) }, icon('back'));
     this.next = el('button', { class: 'v-nav next', onclick: () => this.step(1) }, icon('fwd'));
+    this.rotateBtn = el('button', { title: 'หมุนรูป 90° (R)', class: 'hidden', text: '↻', style: { fontSize: '18px' }, onclick: () => this.rotate() });
+    this.slideBtn = el('button', { title: 'สไลด์โชว์', class: 'hidden', onclick: () => this.toggleSlideshow() }, icon('play'));
+    this.exifBtn = el('button', { title: 'ข้อมูลภาพ (EXIF)', class: 'hidden', onclick: () => this.toggleExif() }, icon('info'));
+    this.exifPane = el('div', { class: 'exif-pane hidden' });
     this.el = el('div', { id: 'viewer', class: 'hidden' },
       el('div', { class: 'v-top' }, this.title,
+        this.slideBtn,
+        this.rotateBtn,
+        this.exifBtn,
         el('button', { title: 'เปิดในแท็บใหม่', onclick: () => window.open(fileUrl(this.cur.path), '_blank') }, icon('open')),
         el('button', { title: 'ดาวน์โหลด', onclick: () => { location.href = fileUrl(this.cur.path, true); } }, icon('download')),
         el('button', { title: 'ปิด', onclick: () => this.close() }, icon('x'))),
-      el('div', { style: { flex: 1, minHeight: 0, position: 'relative', display: 'flex' } }, this.body, this.prev, this.next));
+      el('div', { style: { flex: 1, minHeight: 0, position: 'relative', display: 'flex' } }, this.body, this.exifPane, this.prev, this.next));
     this.body.style.flex = '1';
     document.body.append(this.el);
     addEventListener('keydown', e => {
       if (this.el.classList.contains('hidden') || $('#modal')) return;
+      if (e.target && (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT')) {
+        if (e.key === 'Escape') this.close();
+        return;
+      }
       if (e.key === 'Escape') this.close();
       if (e.key === 'ArrowLeft') this.step(-1);
       if (e.key === 'ArrowRight') this.step(1);
+      if (e.key.toLowerCase() === 'r' && kindOf(this.cur) === 'image') this.rotate();
     });
     let sx = null;
     this.body.addEventListener('touchstart', e => { sx = e.touches[0].clientX; }, { passive: true });
@@ -318,6 +434,62 @@ const Viewer = {
       sx = null;
     });
   },
+  rotate() {
+    this.deg = (this.deg + 90) % 360;
+    const img = this.body.querySelector('img');
+    if (img) img.style.transform = this.deg ? `rotate(${this.deg}deg)` : '';
+  },
+  toggleSlideshow(force) {
+    const on = force !== undefined ? force : !this.slideTimer;
+    this.stopSlideshow();
+    if (on) {
+      this.slideBtn.replaceChildren(icon('pause'));
+      this.slideTimer = setInterval(() => {
+        if (this.i + 1 < this.list.length) this.step(1);
+        else { this.i = 0; this.show(); }
+      }, 3500);
+      toast('เริ่มเล่นสไลด์โชว์ (ทุก 3.5 วินาที)');
+    }
+  },
+  stopSlideshow() {
+    if (this.slideTimer) {
+      clearInterval(this.slideTimer);
+      this.slideTimer = null;
+    }
+    if (this.slideBtn) this.slideBtn.replaceChildren(icon('play'));
+  },
+  async toggleExif() {
+    if (!this.exifPane.classList.contains('hidden')) {
+      this.exifPane.classList.add('hidden');
+      return;
+    }
+    this.exifPane.classList.remove('hidden');
+    this.exifPane.replaceChildren(el('div', { class: 'muted', text: 'กำลังอ่านข้อมูล EXIF…' }));
+    try {
+      const info = await api('exif', { path: this.cur.path });
+      const rows = [
+        ['ชื่อไฟล์', info.name],
+        ['ขนาดไฟล์', fmtSize(info.size)],
+        info.width && info.height ? ['ความละเอียด', `${info.width} × ${info.height} px`] : null,
+        info.dateTaken || info.dateTime ? ['วันที่ถ่าย', info.dateTaken || info.dateTime] : ['แก้ไขล่าสุด', fmtDate(info.mtime)],
+        info.make || info.model ? ['กล้อง / อุปกรณ์', [info.make, info.model].filter(Boolean).join(' ')] : null,
+        info.aperture ? ['รูรับแสง', 'f/' + info.aperture] : null,
+        info.exposure ? ['ความเร็วชัตเตอร์', info.exposure + ' s'] : null,
+        info.iso ? ['ISO', info.iso] : null,
+        info.focalLength ? ['ระยะเลนส์', info.focalLength] : null,
+      ].filter(Boolean);
+      const dl = el('dl', { class: 'kv' });
+      for (const [k, v] of rows) dl.append(el('dt', { text: k }), el('dd', { text: v }));
+      if (typeof info.lat === 'number' && typeof info.lon === 'number') {
+        const coord = `${info.lat.toFixed(5)}, ${info.lon.toFixed(5)}`;
+        dl.append(el('dt', { text: 'พิกัด GPS' }),
+          el('dd', null, el('a', { href: `https://maps.google.com/?q=${info.lat},${info.lon}`, target: '_blank', rel: 'noopener', text: coord + ' (ดูแผนที่)' })));
+      }
+      this.exifPane.replaceChildren(el('h4', { text: 'ข้อมูลรูปภาพ (EXIF)' }), dl);
+    } catch (e) {
+      this.exifPane.replaceChildren(el('div', { class: 'muted', text: 'ไม่สามารถอ่านข้อมูล EXIF ได้: ' + e.message }));
+    }
+  },
   step(d) {
     const n = this.i + d;
     if (n < 0 || n >= this.list.length) return;
@@ -325,6 +497,7 @@ const Viewer = {
     this.show();
   },
   async show() {
+    this.deg = 0;
     const e = this.cur = this.list[this.i];
     this.title.textContent = `${e.name}  ·  ${fmtSize(e.size)}` + (this.list.length > 1 ? `  ·  ${this.i + 1}/${this.list.length}` : '');
     this.prev.classList.toggle('hidden', this.i === 0);
@@ -332,6 +505,15 @@ const Viewer = {
     const url = fileUrl(e.path);
     const k = kindOf(e);
     const ext = extOf(e.name);
+    const isImg = k === 'image';
+    this.rotateBtn.classList.toggle('hidden', !isImg);
+    this.slideBtn.classList.toggle('hidden', !isImg || this.list.length <= 1);
+    this.exifBtn.classList.toggle('hidden', !isImg);
+    if (!isImg) this.exifPane.classList.add('hidden');
+    else if (!this.exifPane.classList.contains('hidden')) {
+      this.exifPane.classList.add('hidden');
+      this.toggleExif();
+    }
     this.body.replaceChildren();
     if (k === 'image') {
       this.body.append(el('img', { src: url, alt: e.name }));
@@ -354,17 +536,18 @@ const Viewer = {
     } else if (k === 'text' && e.size < 4 * 1024 * 1024) {
       const pre = el('pre', { text: 'กำลังโหลด…' });
       this.body.append(pre);
+      const replace = node => this.body.replaceChildren(node);
       try {
         const r = await fetch(url, { headers: { Range: 'bytes=0-1048575' } });
         const text = await r.text();
         if (ext === 'md' || ext === 'markdown') {
-          this.body.replaceChildren(renderMarkdownView(text));
+          replace(renderMarkdownView(text, e, replace));
         } else if (ext === 'csv' || ext === 'tsv') {
-          this.body.replaceChildren(renderCsvView(text, ext === 'tsv' ? '\t' : ','));
+          replace(renderCsvView(text, ext === 'tsv' ? '\t' : ',', e, replace));
         } else if (CODE_EXTS.has(ext)) {
-          this.body.replaceChildren(renderCodeView(text, ext));
+          replace(renderCodeView(text, ext, e, replace));
         } else {
-          pre.textContent = text;
+          replace(renderPlainTextView(text, e, replace));
         }
       } catch {
         pre.textContent = 'โหลดไม่สำเร็จ';
@@ -376,7 +559,9 @@ const Viewer = {
     }
   },
   close() {
+    this.stopSlideshow();
     this.el.classList.add('hidden');
+    this.exifPane.classList.add('hidden');
     this.body.replaceChildren();
   },
 };

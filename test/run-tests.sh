@@ -10,7 +10,7 @@ SRC=app/src/com/nexshare
 OUT=build/test
 rm -rf "$OUT" && mkdir -p "$OUT/classes"
 
-CLASSES="HttpServer Crypto CertGen Storage AuditLog Auth Users SessionStore Settings Trash Shares Zip FileApi WebDav"
+CLASSES="HttpServer Crypto CertGen Storage AuditLog LiveEvents Auth Users SessionStore Settings Trash Shares Zip FileApi WebDav"
 SOURCES=""
 for c in $CLASSES; do SOURCES="$SOURCES $SRC/$c.java"; done
 

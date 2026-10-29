@@ -60,6 +60,12 @@ async function shareDialog(entry, defaultMode = 'share') {
   }
   fields.push(
     { name: 'hours', label: 'หมดอายุใน', type: 'select', value: 168, options: SHARE_EXPIRY },
+    { name: 'maxHits', label: 'จำกัดจำนวนครั้งที่เปิด/ส่งไฟล์ (0 = ไม่จำกัด)', type: 'number', value: '0', placeholder: '0' },
+  );
+  if (entry.dir) {
+    fields.push({ name: 'maxSizeMb', label: 'จำกัดขนาดไฟล์สูงสุดสำหรับขอไฟล์ (MB, 0 = ไม่จำกัด)', type: 'number', value: '0', placeholder: '0' });
+  }
+  fields.push(
     { name: 'password', label: 'รหัสผ่าน (ไม่บังคับ)', type: 'password', placeholder: 'อย่างน้อย 4 ตัวอักษร', autocomplete: 'new-password' },
   );
   const v = await formDialog({
@@ -76,7 +82,15 @@ async function shareDialog(entry, defaultMode = 'share') {
   try {
     share = await api('share/create', null, {
       method: 'POST',
-      body: JSON.stringify({ path: entry.path, hours: +v.hours, password: v.password, mode, label: v.label || '' }),
+      body: JSON.stringify({
+        path: entry.path,
+        hours: +v.hours,
+        password: v.password,
+        mode,
+        label: v.label || '',
+        maxHits: Math.max(0, parseInt(v.maxHits || '0', 10) || 0),
+        maxSizeMb: Math.max(0, parseInt(v.maxSizeMb || '0', 10) || 0),
+      }),
     });
   } catch (e) { toast('สร้างลิงก์ไม่สำเร็จ: ' + e.message); return; }
   showShareLink(share);
@@ -112,6 +126,7 @@ function SharedLinks(body) {
   }
   function status(s) {
     if (s.expires && s.expires < Date.now()) return el('span', { class: 'pill gray', text: 'หมดอายุ' });
+    if (s.maxHits > 0 && s.hits >= s.maxHits) return el('span', { class: 'pill orange', text: 'ครบโควตา' });
     return el('span', { class: 'pill green', text: s.expires ? 'ถึง ' + fmtDate(s.expires) : 'ไม่หมดอายุ' });
   }
   function modeBadge(s) {
@@ -139,7 +154,7 @@ function SharedLinks(body) {
           el('td', { class: 'name-cell' }, fileIcon(s.dir ? 'folder' : kindOf(s)), el('span', { text: s.label ? `${s.name} (${s.label})` : s.name, title: displayPath(s.path) }), s.password ? icon('key', 'tiny') : null),
           el('td', null, modeBadge(s)),
           el('td', null, status(s)),
-          el('td', { text: s.hits + ' ครั้ง' }),
+          el('td', { text: (s.maxHits > 0 ? `${s.hits} / ${s.maxHits} ครั้ง` : `${s.hits} ครั้ง`) + (s.maxBytes > 0 ? ` · ≤${fmtSize(s.maxBytes)}` : '') }),
           State.admin ? el('td', { text: s.owner === 'admin' ? 'ผู้ดูแล' : s.owner }) : null,
           el('td', { class: 'actions' },
             el('button', { class: 'icon-btn', title: 'ดูลิงก์ / QR', onclick: () => showShareLink(s) }, icon('link')),

@@ -42,10 +42,14 @@ public final class Shares {
     // ---------------------------------------------------------------- store
 
     public synchronized JSONObject create(File target, String owner, long expiresMs, String password) {
-        return create(target, owner, expiresMs, password, "share", "");
+        return create(target, owner, expiresMs, password, "share", "", 0, 0L);
     }
 
     public synchronized JSONObject create(File target, String owner, long expiresMs, String password, String mode, String label) {
+        return create(target, owner, expiresMs, password, mode, label, 0, 0L);
+    }
+
+    public synchronized JSONObject create(File target, String owner, long expiresMs, String password, String mode, String label, int maxHits, long maxBytes) {
         String id = Crypto.randomId(10); // 16 chars of base32, ~80 bits
         String m = "request".equalsIgnoreCase(mode) ? "request" : "share";
         JSONObject o = new JSONObject();
@@ -60,6 +64,8 @@ public final class Shares {
         Storage.put(o, "expires", expiresMs);
         Storage.put(o, "pw", password == null || password.isEmpty() ? "" : Crypto.hashPassword(password));
         Storage.put(o, "hits", 0);
+        Storage.put(o, "maxHits", Math.max(0, maxHits));
+        Storage.put(o, "maxBytes", Math.max(0L, maxBytes));
         prefs.edit().putString(id, o.toString()).apply();
         return publicView(o);
     }
@@ -85,6 +91,8 @@ public final class Shares {
         for (String k : new String[]{"id", "path", "name", "dir", "owner", "created", "expires", "hits"}) Storage.put(v, k, o.opt(k));
         Storage.put(v, "mode", o.optString("mode", "share"));
         Storage.put(v, "label", o.optString("label", ""));
+        Storage.put(v, "maxHits", o.optInt("maxHits", 0));
+        Storage.put(v, "maxBytes", o.optLong("maxBytes", 0L));
         Storage.put(v, "password", !o.optString("pw").isEmpty());
         return v;
     }
@@ -126,6 +134,11 @@ public final class Shares {
         long exp = s.optLong("expires");
         if (exp > 0 && exp < System.currentTimeMillis()) {
             page(res, 410, "ลิงก์หมดอายุ", "<p>ลิงก์แชร์นี้หมดอายุแล้ว</p>");
+            return;
+        }
+        int maxHits = s.optInt("maxHits", 0);
+        if (maxHits > 0 && s.optInt("hits", 0) >= maxHits) {
+            page(res, 410, "ลิงก์หมดโควตา", "<p>ลิงก์นี้ถูกใช้งานครบจำนวนครั้งที่กำหนดแล้ว (" + maxHits + " ครั้ง)</p>");
             return;
         }
         File base = new File(s.optString("path"));
@@ -220,6 +233,11 @@ public final class Shares {
             res.error(400, "bad file name");
             return;
         }
+        long maxBytes = s.optLong("maxBytes", 0L);
+        if (maxBytes > 0 && req.contentLength > maxBytes) {
+            res.error(413, "file_too_large");
+            return;
+        }
         if (Storage.exceedsQuota(ctx, owner, req.contentLength)) {
             res.error(507, "quota_exceeded");
             return;
@@ -229,12 +247,18 @@ public final class Shares {
             res.error(400, "upload incomplete");
             return;
         }
+        if (maxBytes > 0 && saved.length() > maxBytes) {
+            saved.delete();
+            res.error(413, "file_too_large");
+            return;
+        }
         String mt = req.param("mtime");
         if (mt != null) {
             try { saved.setLastModified(Long.parseLong(mt)); } catch (NumberFormatException ignored) { }
         }
         bump(s);
         AuditLog.log(ctx, req, "request_upload", "request:" + owner.name, saved.getPath());
+        LiveEvents.publish("request_upload", base.getPath(), saved.getName());
         JSONObject out = new JSONObject();
         Storage.put(out, "ok", true);
         Storage.put(out, "name", saved.getName());

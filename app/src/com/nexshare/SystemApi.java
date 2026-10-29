@@ -474,6 +474,7 @@ final class SystemApi {
         put(o, "rx", TrafficStats.getTotalRxBytes());
         put(o, "tx", TrafficStats.getTotalTxBytes());
         put(o, "time", System.currentTimeMillis());
+        put(o, "eventSeq", LiveEvents.latestSeq());
         res.json(200, o.toString());
     }
 

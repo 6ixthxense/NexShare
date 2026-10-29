@@ -1,17 +1,41 @@
 /* NexShare web desktop — File Station operations, context actions, and drag-and-drop upload. */
 'use strict';
 
-function createFileOps({ st, selected, open, load, updateSel, list }) {
+function createFileOps({ st, selected, open, load, updateSel, list, buildSide }) {
   const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
     || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+  function isFav(path) {
+    return (store.get('favorites', []) || []).some(f => f.path === path);
+  }
+
+  function toggleFav(entry) {
+    if (!entry) return;
+    const favs = store.get('favorites', []) || [];
+    const idx = favs.findIndex(f => f.path === entry.path);
+    if (idx >= 0) {
+      favs.splice(idx, 1);
+      toast('นำออกจากรายการโปรดแล้ว');
+    } else {
+      favs.push({ path: entry.path, name: entry.name, dir: !!entry.dir });
+      toast('ปักหมุด "' + entry.name + '" ในรายการโปรดแล้ว');
+    }
+    store.set('favorites', favs);
+    if (buildSide) buildSide();
+  }
 
   function actionItems() {
     const sel = selected(), one = sel.length === 1 ? sel[0] : null;
     const w = State.canWrite && (st.writable !== false || st.searching);
+    const isZip = one && !one.dir && /\.zip$/i.test(one.name);
     return [
       { label: 'เปิด', ico: 'open', disabled: !one, run: () => open(one) },
+      one && one.dir ? { label: isFav(one.path) ? 'เลิกปักหมุดจากรายการโปรด' : 'ปักหมุดในรายการโปรด', ico: 'star', run: () => toggleFav(one) } : null,
       { label: 'ดาวน์โหลด', ico: 'download', disabled: !sel.length, run: () => download(false) },
       { label: 'ดาวน์โหลดเป็น ZIP', ico: 'zip', disabled: !sel.length, run: () => download(true) },
+      w && isZip ? { label: 'แตกไฟล์ที่นี่ (Extract ZIP)', ico: 'zip', run: () => unzipFile(one) } : null,
+      w && sel.length ? { label: 'บีบอัดเป็น .zip เก็บในโฟลเดอร์นี้…', ico: 'zip', run: () => compressZip() } : null,
+      w && !st.searching ? { label: 'สร้างไฟล์ข้อความใหม่…', ico: 'edit', run: () => createFile() } : null,
       w && { label: 'สร้างลิงก์แชร์…', ico: 'share', disabled: !one, run: () => shareDialog(one, 'share') },
       w && one && one.dir ? { label: 'สร้างลิงก์ขอไฟล์…', ico: 'upload', run: () => shareDialog(one, 'request') } : null,
       { label: 'คัดลอกลิงก์ดาวน์โหลด (ใน Wi-Fi)', ico: 'link', disabled: !one || one.dir, run: () => copyLink(one) },
@@ -26,6 +50,56 @@ function createFileOps({ st, selected, open, load, updateSel, list }) {
       w && { label: State.trash ? 'ย้ายไปถังขยะ' : 'ลบ', ico: 'trash', danger: true, disabled: !sel.length, run: () => del(false) },
       w && State.trash && { label: 'ลบถาวร', ico: 'x', danger: true, disabled: !sel.length, run: () => del(true) },
     ];
+  }
+
+  async function createFile() {
+    const name = await dialog({ title: 'สร้างไฟล์ข้อความใหม่', input: 'note.md', okText: 'สร้างและแก้ไข' });
+    if (!name) return;
+    try {
+      const created = await api('write', { path: st.path, name, create: 1 }, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+        body: '',
+      });
+      await load();
+      toast('สร้างไฟล์ "' + created.name + '" แล้ว');
+      if (typeof Viewer !== 'undefined' && Viewer.openEditor) {
+        Viewer.openEditor(created, '');
+      }
+    } catch (e) {
+      toast(e.status === 409 ? 'มีไฟล์ชื่อนี้อยู่แล้ว' : 'สร้างไฟล์ไม่สำเร็จ: ' + e.message);
+    }
+  }
+
+  async function unzipFile(e) {
+    if (!e) return;
+    toast('กำลังแตกไฟล์ "' + e.name + '"…');
+    try {
+      const r = await api('unzip', { path: e.path }, { method: 'POST' });
+      await load();
+      toast(`แตกไฟล์แล้ว ${r.extracted} รายการ ไปยัง "${r.name}"`);
+    } catch (err) {
+      toast('แตกไฟล์ไม่สำเร็จ: ' + err.message);
+    }
+  }
+
+  async function compressZip() {
+    const sel = selected();
+    if (!sel.length) return;
+    const defName = (sel.length === 1 ? sel[0].name.replace(/\.[^.]+$/, '') : 'Archive') + '.zip';
+    const name = await dialog({ title: 'บีบอัดเป็นไฟล์ .zip เก็บในโฟลเดอร์นี้', input: defName, okText: 'บีบอัด' });
+    if (!name) return;
+    toast('กำลังบีบอัดไฟล์…');
+    try {
+      const r = await api('zip/save', null, {
+        method: 'POST',
+        body: JSON.stringify({ dst: st.path, name, p: sel.map(e => e.path) }),
+      });
+      await load();
+      toast(`สร้างไฟล์ ZIP "${r.name}" (${fmtSize(r.size)}) แล้ว`);
+    } catch (err) {
+      toast('บีบอัดไม่สำเร็จ: ' + err.message);
+    }
   }
 
   async function setWallpaperFromFile(e) {
@@ -153,6 +227,6 @@ function createFileOps({ st, selected, open, load, updateSel, list }) {
     Uploader.add(out, dest);
   });
 
-  return { actionItems, download, copyLink, mkdir, rename, del, clip, paste, pick };
+  return { actionItems, download, copyLink, mkdir, createFile, unzipFile, compressZip, toggleFav, rename, del, clip, paste, pick };
 }
 

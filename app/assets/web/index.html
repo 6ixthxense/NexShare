@@ -102,6 +102,15 @@
       <dt>แบตเตอรี่</dt><dd id="sBat">-</dd>
     </dl>
   </section>
+  <section class="widget" id="wClip">
+    <h3><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="18" rx="2" fill="#2a8ad8"/><path d="M9 4h6v3H9z" fill="#ffc94a"/><path d="M8 11h8M8 15h5" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/></svg>Quick Clipboard</h3>
+    <textarea id="clipIn" class="clip-in" rows="2" placeholder="วางข้อความหรือลิงก์ส่งเข้ามือถือ…"></textarea>
+    <div class="clip-actions">
+      <button class="btn small primary" id="clipSendBtn" type="button">ส่งเข้ามือถือ</button>
+      <button class="btn small" id="clipCopyBtn" type="button">คัดลอกล่าสุด</button>
+    </div>
+    <div class="clip-list" id="clipList"></div>
+  </section>
 </aside>
 
 <div id="uploads" class="hidden">
