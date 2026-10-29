@@ -173,11 +173,13 @@ public final class Auth {
             res.error(400, "bad request");
             return;
         }
+        String userAttempt = b.optString("user", "");
         String secret = b.has("password") ? b.optString("password") : b.optString("pin");
         Users.User[] out = new Users.User[1];
-        Result r = verify(req, b.optString("user", ""), secret, b.optString("otp", ""), out);
+        Result r = verify(req, userAttempt, secret, b.optString("otp", ""), out);
         switch (r) {
             case LOCKED:
+                AuditLog.log(ctx, req, "login_fail", userAttempt.isEmpty() ? "admin" : userAttempt, "locked");
                 res.header("Retry-After", String.valueOf(lockRemaining(req)));
                 res.error(429, "locked");
                 return;
@@ -185,6 +187,7 @@ public final class Auth {
                 res.error(401, "otp_required");
                 return;
             case BAD:
+                AuditLog.log(ctx, req, "login_fail", userAttempt.isEmpty() ? "admin" : userAttempt, "wrong_credentials");
                 res.error(401, "wrong_credentials");
                 return;
             default:
@@ -193,10 +196,15 @@ public final class Auth {
         // Logging in as owner with the PIN/password counts as a fresh re-authentication.
         String token = sessions.create(out[0].name, out[0].isAdmin());
         setCookie(req, res, token, SessionStore.TTL_MS / 1000);
+        AuditLog.log(ctx, req, "login", out[0].name, req.viaTunnel() ? "tunnel" : "lan");
         res.json(200, "{\"ok\":true}");
     }
 
     public void logout(HttpServer.Request req, HttpServer.Response res) throws IOException {
+        Who w = who(req);
+        if (w != null && w.session != null) {
+            AuditLog.log(ctx, req, "logout", w.user.name, "");
+        }
         sessions.revoke(req.cookie(COOKIE));
         setCookie(req, res, "", 0);
         res.json(200, "{}");
@@ -256,6 +264,7 @@ public final class Auth {
                 o.put("canWrite", w.user.canWrite());
                 o.put("sudo", w.sudo());
                 o.put("loggedIn", w.session != null);
+                o.put("quota", w.user.quotaBytes);
             }
         } catch (Exception ignored) { }
     }

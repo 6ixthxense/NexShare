@@ -90,9 +90,9 @@ public final class WebDav {
             case "PROPFIND": propfind(req, res, t, user); break;
             case "GET":
             case "HEAD": get(req, res, t, user); break;
-            case "PUT": put(req, res, t); break;
+            case "PUT": put(req, res, t, user); break;
             case "MKCOL": mkcol(req, res, t); break;
-            case "DELETE": delete(res, t, user); break;
+            case "DELETE": delete(req, res, t, user); break;
             case "COPY": copyMove(req, res, t, user, false); break;
             case "MOVE": copyMove(req, res, t, user, true); break;
             case "LOCK": lock(req, res, t); break;
@@ -133,7 +133,9 @@ public final class WebDav {
             if (!Storage.rootId(i).equals(id)) continue;
             File root = roots.get(i).getCanonicalFile();
             File f = sub.isEmpty() ? root : Storage.within(new File(root, sub).getPath(), Storage.canonicalRoots(ctx));
-            if (!f.getPath().equals(root.getPath()) && !f.getPath().startsWith(root.getPath() + "/")) throw new SecurityException("escape");
+            if (!f.getPath().equals(root.getPath())
+                    && !f.getPath().startsWith(root.getPath() + File.separator)
+                    && !f.getPath().startsWith(root.getPath() + "/")) throw new SecurityException("escape");
             if (Storage.inTrash(f)) throw new SecurityException("trash");
             if (!user.allows(f) && !user.canTraverse(f)) throw new SecurityException("not allowed");
             return new Target(f, PREFIX + "/" + id + (sub.isEmpty() ? "" : "/" + sub), root);
@@ -265,7 +267,7 @@ public final class WebDav {
         res.text(200, "text/html; charset=utf-8", sb.toString());
     }
 
-    private void put(HttpServer.Request req, HttpServer.Response res, Target t) throws IOException {
+    private void put(HttpServer.Request req, HttpServer.Response res, Target t, Users.User user) throws IOException {
         if (t.file.isDirectory()) {
             res.error(405, "is a folder");
             return;
@@ -275,9 +277,17 @@ public final class WebDav {
             res.error(409, "parent folder missing");
             return;
         }
+        if (!user.allows(parent)) {
+            res.error(403, "forbidden");
+            return;
+        }
         String name = Storage.cleanName(t.file.getName());
         if (name == null) {
             res.error(400, "bad name");
+            return;
+        }
+        if (Storage.exceedsQuota(ctx, user, Math.max(0L, req.contentLength))) {
+            res.error(507, "quota_exceeded");
             return;
         }
         boolean existed = t.file.exists();
@@ -286,6 +296,12 @@ public final class WebDav {
             res.error(400, "upload incomplete");
             return;
         }
+        if (user.quotaBytes > 0 && Storage.userUsedBytes(ctx, user) > user.quotaBytes) {
+            saved.delete();
+            res.error(507, "quota_exceeded");
+            return;
+        }
+        AuditLog.log(ctx, req, "upload", user.name, "dav:" + saved.getPath());
         res.empty(existed ? 204 : 201);
     }
 
@@ -315,7 +331,7 @@ public final class WebDav {
         return name.startsWith("._") || name.equals(".DS_Store") || name.startsWith("~$") || name.startsWith(".~lock");
     }
 
-    private void delete(HttpServer.Response res, Target t, Users.User user) throws IOException {
+    private void delete(HttpServer.Request req, HttpServer.Response res, Target t, Users.User user) throws IOException {
         if (!t.file.exists()) {
             res.error(404, "not found");
             return;
@@ -328,6 +344,7 @@ public final class WebDav {
             res.error(500, "cannot delete");
             return;
         }
+        AuditLog.log(ctx, req, "delete", user.name, "dav:" + t.file.getPath());
         res.empty(204);
     }
 
@@ -374,8 +391,13 @@ public final class WebDav {
             res.error(403, "source and destination are the same");
             return;
         }
-        if (dst.file.getPath().startsWith(src.file.getPath() + "/")) {
+        if (dst.file.getPath().startsWith(src.file.getPath() + File.separator)
+                || dst.file.getPath().startsWith(src.file.getPath() + "/")) {
             res.error(409, "cannot copy a folder into itself");
+            return;
+        }
+        if (!move && Storage.exceedsQuota(ctx, user, Storage.sizeRec(src.file, 0))) {
+            res.error(507, "quota_exceeded");
             return;
         }
         File parent = dst.file.getParentFile();

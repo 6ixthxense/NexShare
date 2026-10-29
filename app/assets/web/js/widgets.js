@@ -30,6 +30,13 @@ async function poll() {
     $('#serverName').textContent = s.name;
     $('#hName').textContent = s.name;
     $('#hIp').textContent = s.ip || '-';
+    const tsLbl = $('#hTsLabel'), tsVal = $('#hTs');
+    if (tsLbl && tsVal) {
+      const hasTs = !!s.tailscaleIp;
+      tsLbl.classList.toggle('hidden', !hasTs);
+      tsVal.classList.toggle('hidden', !hasTs);
+      if (hasTs) tsVal.textContent = s.tailscaleIp;
+    }
     $('#hHost').textContent = s.host + ':' + s.port;
     $('#hUp').textContent = fmtUptime(s.uptime);
     const warn = (s.battery >= 0 && s.battery <= 15 && !s.charging) || s.diskFree / s.diskTotal < .05;

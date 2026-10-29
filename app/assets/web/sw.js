@@ -3,12 +3,13 @@
  * the network (never cached). Bump VERSION when the asset list changes. */
 'use strict';
 
-const VERSION = 'nexshare-v2.0.0';
+const VERSION = 'nexshare-v2.1.0';
 const SHELL = [
   '/', '/index.html', '/style.css', '/manifest.webmanifest',
   '/vendor/qrcode.js',
-  '/js/core.js', '/js/files.js', '/js/media.js', '/js/system.js', '/js/security.js', '/js/viewer.js',
-  '/js/widgets.js', '/js/download.js', '/js/player.js', '/js/root.js', '/js/wallpaper.js',
+  '/js/core.js', '/js/i18n.js', '/js/file-ops.js', '/js/files.js', '/js/media.js',
+  '/js/system.js', '/js/security.js', '/js/viewer.js', '/js/widgets.js',
+  '/js/download.js', '/js/player.js', '/js/root.js', '/js/wallpaper.js',
   '/js/remote.js', '/js/shares.js', '/js/trash.js', '/js/backup.js', '/js/main.js',
   '/icons/icon-192.png', '/icons/icon-512.png',
 ];
@@ -26,7 +27,7 @@ self.addEventListener('activate', e => {
 self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.origin !== location.origin) return;
-  if (/^\/(api|s|dav)(\/|$)/.test(url.pathname)) return; // live data: straight to the network
+  if (/^\/(api|s|r|dav)(\/|$)/.test(url.pathname)) return; // live data: straight to the network
   // Shell: network first (the phone is usually right there), cache as fallback for speed/offline.
   e.respondWith(fetch(e.request).then(r => {
     if (r.ok) {

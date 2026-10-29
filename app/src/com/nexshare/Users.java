@@ -30,13 +30,20 @@ public final class Users {
         public final String role;
         /** Canonical folder paths this user may see; empty means every storage root. */
         public final List<String> folders;
+        /** Maximum total bytes allowed in this user's folders (0 = unlimited). */
+        public final long quotaBytes;
         final String pwHash;
 
         User(String name, String role, List<String> folders, String pwHash) {
+            this(name, role, folders, pwHash, 0L);
+        }
+
+        User(String name, String role, List<String> folders, String pwHash, long quotaBytes) {
             this.name = name;
             this.role = role;
             this.folders = Collections.unmodifiableList(new ArrayList<>(folders));
             this.pwHash = pwHash;
+            this.quotaBytes = Math.max(0L, quotaBytes);
         }
 
         public boolean isAdmin() {
@@ -51,7 +58,9 @@ public final class Users {
         public boolean allows(File canonical) {
             if (folders.isEmpty()) return true;
             String p = canonical.getPath();
-            for (String f : folders) if (p.equals(f) || p.startsWith(f + "/")) return true;
+            for (String f : folders) {
+                if (p.equals(f) || p.startsWith(f + File.separator) || p.startsWith(f + "/")) return true;
+            }
             return false;
         }
 
@@ -59,7 +68,9 @@ public final class Users {
         public boolean canTraverse(File canonical) {
             if (folders.isEmpty()) return true;
             String p = canonical.getPath();
-            for (String f : folders) if (f.startsWith(p + "/")) return true;
+            for (String f : folders) {
+                if (f.startsWith(p + File.separator) || f.startsWith(p + "/")) return true;
+            }
             return false;
         }
 
@@ -69,6 +80,7 @@ public final class Users {
                 o.put("name", name);
                 o.put("role", role);
                 o.put("folders", new JSONArray(folders));
+                o.put("quota", quotaBytes);
                 if (withHash) o.put("pw", pwHash);
             } catch (Exception ignored) { }
             return o;
@@ -76,7 +88,7 @@ public final class Users {
     }
 
     /** The built-in owner account (logs in with the PIN or admin password). */
-    public static final User OWNER = new User(ADMIN, ROLE_ADMIN, new ArrayList<String>(), "");
+    public static final User OWNER = new User(ADMIN, ROLE_ADMIN, new ArrayList<String>(), "", 0L);
 
     private static Users instance;
     private final SharedPreferences prefs;
@@ -96,7 +108,7 @@ public final class Users {
                 List<String> folders = new ArrayList<>();
                 JSONArray f = o.optJSONArray("folders");
                 for (int j = 0; f != null && j < f.length(); j++) folders.add(f.getString(j));
-                User u = new User(o.getString("name"), o.optString("role", ROLE_RO), folders, o.optString("pw"));
+                User u = new User(o.getString("name"), o.optString("role", ROLE_RO), folders, o.optString("pw"), o.optLong("quota", 0L));
                 users.put(key(u.name), u);
             }
         } catch (Exception ignored) { }
@@ -157,8 +169,14 @@ public final class Users {
      * Returns an error message or null.
      */
     public synchronized String save(String name, String role, List<String> folders, String password) {
+        User old = name == null ? null : users.get(key(name));
+        return save(name, role, folders, password, old != null ? old.quotaBytes : 0L);
+    }
+
+    public synchronized String save(String name, String role, List<String> folders, String password, long quotaBytes) {
         if (!validName(name)) return "ชื่อผู้ใช้ใช้ได้เฉพาะ a-z 0-9 . _ - (2–32 ตัว) และห้ามใช้ admin";
         if (!validRole(role)) return "บทบาทไม่ถูกต้อง";
+        if (quotaBytes < 0) return "โควตาพื้นที่ต้องไม่ติดลบ";
         User old = users.get(key(name));
         String hash;
         if (password != null && !password.isEmpty()) {
@@ -169,7 +187,7 @@ public final class Users {
         } else {
             return "ต้องตั้งรหัสผ่านให้ผู้ใช้ใหม่";
         }
-        users.put(key(name), new User(old != null ? old.name : name.trim(), role, folders, hash));
+        users.put(key(name), new User(old != null ? old.name : name.trim(), role, folders, hash, quotaBytes));
         persist();
         return null;
     }

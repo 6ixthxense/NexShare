@@ -52,7 +52,8 @@ final class SystemApi {
             return true;
         }
         boolean adminRoute = p.equals("/api/wallpaper") || p.startsWith("/api/tunnel/") || p.startsWith("/api/settings")
-            || p.startsWith("/api/users") || p.startsWith("/api/2fa/") || p.equals("/api/admin-password") || p.startsWith("/api/tls/");
+            || p.startsWith("/api/users") || p.startsWith("/api/2fa/") || p.equals("/api/admin-password")
+            || p.startsWith("/api/tls/") || p.startsWith("/api/audit");
         if (!adminRoute) return false;
         if (!u.isAdmin()) {
             res.error(403, "admin_only");
@@ -61,7 +62,8 @@ final class SystemApi {
         // Read-only views and the tunnel switch just need an admin; changing security settings needs sudo.
         boolean needsSudo = (p.equals("/api/settings") && "POST".equals(req.method))
             || (p.startsWith("/api/users") && !p.equals("/api/users")) || p.startsWith("/api/2fa/")
-            || p.equals("/api/admin-password") || p.equals("/api/tls/regenerate") || p.equals("/api/tunnel/start");
+            || p.equals("/api/admin-password") || p.equals("/api/tls/regenerate") || p.equals("/api/tunnel/start")
+            || p.equals("/api/audit/clear");
         if (needsSudo && !who.sudo()) {
             res.error(403, "sudo_required");
             return true;
@@ -76,12 +78,18 @@ final class SystemApi {
                 tunnelStatus(res);
                 return true;
             case "/api/settings":
-                if ("POST".equals(req.method)) saveSettings(req, res);
+                if ("POST".equals(req.method)) saveSettings(req, res, u);
                 else settings(res);
                 return true;
-            case "/api/users": res.json(200, "{\"users\":" + Users.get(ctx).list() + "}"); return true;
-            case "/api/users/save": saveUser(req, res); return true;
-            case "/api/users/delete": deleteUser(req, res); return true;
+            case "/api/users": usersList(res); return true;
+            case "/api/users/save": saveUser(req, res, u); return true;
+            case "/api/users/delete": deleteUser(req, res, u); return true;
+            case "/api/audit": auditList(req, res); return true;
+            case "/api/audit/clear":
+                AuditLog.clear(ctx);
+                AuditLog.log(ctx, req, "settings", u.name, "audit_clear");
+                res.json(200, "{\"ok\":true}");
+                return true;
             case "/api/2fa/setup": totpSetup(res); return true;
             case "/api/2fa/enable": totpEnable(req, res); return true;
             case "/api/2fa/disable": Settings.setTotp(ctx, "", Settings.TOTP_OFF); res.json(200, "{\"ok\":true}"); return true;
@@ -117,11 +125,12 @@ final class SystemApi {
         put(o, "trashDays", Settings.trashDays(ctx));
         put(o, "webdav", Settings.webdavEnabled(ctx));
         put(o, "webdavTunnel", Settings.webdavViaTunnel(ctx));
+        put(o, "startOnBoot", Settings.startOnBoot(ctx));
         put(o, "sessions", SessionStore.get(ctx).count());
         res.json(200, o.toString());
     }
 
-    private void saveSettings(HttpServer.Request req, HttpServer.Response res) throws IOException {
+    private void saveSettings(HttpServer.Request req, HttpServer.Response res, Users.User u) throws IOException {
         JSONObject b = body(req, res);
         if (b == null) return;
         boolean restart = false;
@@ -134,14 +143,41 @@ final class SystemApi {
         if (b.has("trashDays")) Settings.setTrashDays(ctx, b.optInt("trashDays", 30));
         if (b.has("webdav")) Settings.setWebdavEnabled(ctx, b.optBoolean("webdav"));
         if (b.has("webdavTunnel")) Settings.setWebdavViaTunnel(ctx, b.optBoolean("webdavTunnel"));
+        if (b.has("startOnBoot")) Settings.setStartOnBoot(ctx, b.optBoolean("startOnBoot"));
         if (b.optBoolean("logoutAll")) SessionStore.get(ctx).revokeAll();
         if (restart) ServerService.restartHttps(ctx);
+        AuditLog.log(ctx, req, "settings", u.name, "updated");
         settings(res);
     }
 
-    // ---------------------------------------------------------------- users
+    // ---------------------------------------------------------------- users & audit
 
-    private void saveUser(HttpServer.Request req, HttpServer.Response res) throws IOException {
+    private void usersList(HttpServer.Response res) throws IOException {
+        JSONArray list = Users.get(ctx).list();
+        for (int i = 0; i < list.length(); i++) {
+            JSONObject uo = list.optJSONObject(i);
+            if (uo == null) continue;
+            Users.User usr = Users.get(ctx).find(uo.optString("name"));
+            if (usr != null && usr.quotaBytes > 0) {
+                put(uo, "used", Storage.userUsedBytes(ctx, usr));
+            }
+        }
+        JSONObject out = new JSONObject();
+        put(out, "users", list);
+        res.json(200, out.toString());
+    }
+
+    private void auditList(HttpServer.Request req, HttpServer.Response res) throws IOException {
+        int limit = 200;
+        if (req.param("limit") != null) {
+            try { limit = Integer.parseInt(req.param("limit")); } catch (NumberFormatException ignored) { }
+        }
+        JSONObject out = new JSONObject();
+        put(out, "entries", AuditLog.list(ctx, limit, req.param("action"), req.param("user")));
+        res.json(200, out.toString());
+    }
+
+    private void saveUser(HttpServer.Request req, HttpServer.Response res, Users.User actor) throws IOException {
         JSONObject b = body(req, res);
         if (b == null) return;
         List<String> folders = new ArrayList<>();
@@ -160,25 +196,28 @@ final class SystemApi {
         }
         String name = b.optString("name");
         String password = b.optString("password", "");
+        long quota = b.optLong("quota", 0L);
         Users.User before = Users.get(ctx).find(name);
-        String err = Users.get(ctx).save(name, b.optString("role"), folders, password);
+        String err = Users.get(ctx).save(name, b.optString("role"), folders, password, quota);
         if (err != null) {
             res.error(400, err);
             return;
         }
-        // Role/folder/password changes take effect immediately: end the user's existing sessions.
+        // Role/folder/password/quota changes take effect immediately: end the user's existing sessions.
         if (before != null) SessionStore.get(ctx).revokeUser(name);
         Auth.get(ctx).clearBasicCache();
-        res.json(200, "{\"users\":" + Users.get(ctx).list() + "}");
+        AuditLog.log(ctx, req, "user_save", actor.name, name + " (" + b.optString("role") + ")");
+        usersList(res);
     }
 
-    private void deleteUser(HttpServer.Request req, HttpServer.Response res) throws IOException {
+    private void deleteUser(HttpServer.Request req, HttpServer.Response res, Users.User actor) throws IOException {
         String name = req.param("name");
         if (name != null && Users.get(ctx).delete(name)) {
             SessionStore.get(ctx).revokeUser(name);
             Auth.get(ctx).clearBasicCache();
+            AuditLog.log(ctx, req, "user_delete", actor.name, name);
         }
-        res.json(200, "{\"users\":" + Users.get(ctx).list() + "}");
+        usersList(res);
     }
 
     private void adminPassword(HttpServer.Request req, HttpServer.Response res, Auth.Who who) throws IOException {
@@ -404,6 +443,8 @@ final class SystemApi {
         put(o, "cores", Runtime.getRuntime().availableProcessors());
         Inet4Address ip = MdnsResponder.lanAddress();
         put(o, "ip", ip == null ? "" : ip.getHostAddress());
+        Inet4Address ts = MdnsResponder.tailscaleAddress();
+        put(o, "tailscaleIp", ts == null ? "" : ts.getHostAddress());
         put(o, "host", MdnsResponder.HOST);
         put(o, "port", ServerService.PORT);
         put(o, "httpsPort", ServerService.httpsRunning ? ServerService.HTTPS_PORT : 0);

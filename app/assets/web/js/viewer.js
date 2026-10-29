@@ -1,5 +1,284 @@
-/* NexShare web desktop — file viewer and uploader. Loaded as a classic script; see index.html for order. */
+/* NexShare web desktop — file viewer (image, video, audio, PDF, Markdown, Code, CSV, Office) and resumable uploader. */
 'use strict';
+
+// ---------------------------------------------------------------- document preview helpers
+
+const CODE_EXTS = new Set([
+  'js', 'mjs', 'ts', 'tsx', 'jsx', 'py', 'java', 'c', 'cpp', 'h', 'cs', 'go', 'rs', 'rb', 'php',
+  'sh', 'ps1', 'sql', 'html', 'htm', 'css', 'json', 'xml', 'yml', 'yaml', 'toml', 'ini', 'conf',
+  'gradle', 'kt', 'swift', 'dart',
+]);
+
+function escHtml(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function highlightCodeLine(line) {
+  let s = escHtml(line);
+  s = s.replace(/(&quot;.*?&quot;|'[^']*'|`[^`]*`)/g, '<span class="hl-str">$1</span>');
+  s = s.replace(/\b(function|return|const|let|var|if|else|for|while|class|import|from|export|async|await|try|catch|finally|public|private|protected|static|final|void|int|long|boolean|new|null|true|false|def|elif|None|True|False)\b/g, '<span class="hl-kw">$1</span>');
+  s = s.replace(/(\/\/.*$|#.*$)/g, '<span class="hl-cm">$1</span>');
+  return s;
+}
+
+function renderCodeView(text, ext) {
+  const lines = text.replace(/\r\n/g, '\n').split('\n');
+  const table = el('table', { class: 'code-table' });
+  const maxLines = Math.min(lines.length, 5000);
+  for (let i = 0; i < maxLines; i++) {
+    const codeTd = el('td', { class: 'code-line', html: highlightCodeLine(lines[i]) || ' ' });
+    table.append(el('tr', null, el('td', { class: 'code-ln', text: i + 1 }), codeTd));
+  }
+  return el('div', { class: 'doc-preview code-preview' },
+    el('div', { class: 'doc-bar' },
+      el('span', { class: 'muted', text: `${ext.toUpperCase()} · ${lines.length} บรรทัด` }),
+      el('button', { class: 'btn sm', text: 'คัดลอกโค้ด', onclick: async () => { await copyText(text); toast('คัดลอกโค้ดแล้ว'); } })
+    ),
+    el('div', { class: 'code-scroll' }, table)
+  );
+}
+
+function renderMarkdownHtml(md) {
+  const lines = md.replace(/\r\n/g, '\n').split('\n');
+  let out = '';
+  let inCode = false, inList = false, inTable = false;
+  const inline = s => escHtml(s)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.startsWith('```')) {
+      if (inList) { out += '</ul>'; inList = false; }
+      if (inTable) { out += '</tbody></table>'; inTable = false; }
+      out += inCode ? '</code></pre>' : '<pre class="md-code"><code>';
+      inCode = !inCode;
+      continue;
+    }
+    if (inCode) {
+      out += escHtml(line) + '\n';
+      continue;
+    }
+    if (/^\|(.+)\|\s*$/.test(line)) {
+      if (inList) { out += '</ul>'; inList = false; }
+      const cells = line.trim().slice(1, -1).split('|').map(c => c.trim());
+      if (/^[\s|:-]+$/.test(line.replace(/\|/g, ''))) continue;
+      if (!inTable) {
+        out += '<table class="md-table"><thead><tr>' + cells.map(c => `<th>${inline(c)}</th>`).join('') + '</tr></thead><tbody>';
+        inTable = true;
+      } else {
+        out += '<tr>' + cells.map(c => `<td>${inline(c)}</td>`).join('') + '</tr>';
+      }
+      continue;
+    } else if (inTable) {
+      out += '</tbody></table>';
+      inTable = false;
+    }
+    const hm = line.match(/^(#{1,6})\s+(.*)$/);
+    if (hm) {
+      if (inList) { out += '</ul>'; inList = false; }
+      const lvl = hm[1].length;
+      out += `<h${lvl}>${inline(hm[2])}</h${lvl}>`;
+      continue;
+    }
+    if (/^[-*+]\s+/.test(line)) {
+      if (!inList) { out += '<ul>'; inList = true; }
+      out += `<li>${inline(line.replace(/^[-*+]\s+/, ''))}</li>`;
+      continue;
+    } else if (inList) {
+      out += '</ul>';
+      inList = false;
+    }
+    if (/^>\s?/.test(line)) {
+      out += `<blockquote>${inline(line.replace(/^>\s?/, ''))}</blockquote>`;
+      continue;
+    }
+    if (/^---+$/.test(line.trim())) {
+      out += '<hr>';
+      continue;
+    }
+    if (!line.trim()) {
+      out += '<div class="md-gap"></div>';
+    } else {
+      out += `<p>${inline(line)}</p>`;
+    }
+  }
+  if (inCode) out += '</code></pre>';
+  if (inList) out += '</ul>';
+  if (inTable) out += '</tbody></table>';
+  return out;
+}
+
+function renderMarkdownView(text) {
+  const content = el('div', { class: 'md-body', html: renderMarkdownHtml(text) });
+  const raw = el('pre', { class: 'md-raw hidden', text });
+  let showRaw = false;
+  const toggleBtn = el('button', {
+    class: 'btn sm', text: 'ดูโค้ดต้นฉบับ',
+    onclick: () => {
+      showRaw = !showRaw;
+      content.classList.toggle('hidden', showRaw);
+      raw.classList.toggle('hidden', !showRaw);
+      toggleBtn.textContent = showRaw ? 'ดูหน้าพรีวิว' : 'ดูโค้ดต้นฉบับ';
+    },
+  });
+  return el('div', { class: 'doc-preview' },
+    el('div', { class: 'doc-bar' }, el('span', { class: 'muted', text: 'Markdown' }), toggleBtn),
+    content, raw
+  );
+}
+
+function renderCsvView(text, sep = ',') {
+  const rows = text.replace(/\r\n/g, '\n').split('\n').filter(r => r.length > 0).slice(0, 500);
+  const tbl = el('table', { class: 'md-table' });
+  rows.forEach((r, idx) => {
+    const cols = r.split(sep);
+    const tr = el('tr', null, ...cols.map(c => el(idx === 0 ? 'th' : 'td', { text: c.replace(/^"|"$/g, '') })));
+    tbl.append(tr);
+  });
+  return el('div', { class: 'doc-preview' },
+    el('div', { class: 'doc-bar' }, el('span', { class: 'muted', text: `ตารางข้อมูล (${rows.length} แถว)` })),
+    el('div', { class: 'doc-scroll' }, tbl)
+  );
+}
+
+/** Reads entries from a ZIP buffer (used for .docx, .xlsx, .pptx). */
+async function unzipEntries(buf) {
+  const bytes = new Uint8Array(buf);
+  const view = new DataView(buf);
+  let eocd = -1;
+  for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 65557); i--) {
+    if (view.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error('ไฟล์ไม่ได้อยู่ในรูปแบบ ZIP/Office ที่รองรับ');
+  const count = view.getUint16(eocd + 10, true);
+  let dirOff = view.getUint32(eocd + 16, true);
+  const dec = new TextDecoder();
+  const entries = new Map();
+  for (let i = 0; i < count && dirOff + 46 <= bytes.length; i++) {
+    if (view.getUint32(dirOff, true) !== 0x02014b50) break;
+    const method = view.getUint16(dirOff + 10, true);
+    const compSize = view.getUint32(dirOff + 20, true);
+    const nameLen = view.getUint16(dirOff + 28, true);
+    const extraLen = view.getUint16(dirOff + 30, true);
+    const commentLen = view.getUint16(dirOff + 32, true);
+    const localOff = view.getUint32(dirOff + 42, true);
+    const name = dec.decode(bytes.subarray(dirOff + 46, dirOff + 46 + nameLen));
+    dirOff += 46 + nameLen + extraLen + commentLen;
+    entries.set(name, { method, compSize, localOff });
+  }
+  async function readText(name) {
+    const info = entries.get(name);
+    if (!info) return null;
+    const lo = info.localOff;
+    const nLen = view.getUint16(lo + 26, true);
+    const eLen = view.getUint16(lo + 28, true);
+    const start = lo + 30 + nLen + eLen;
+    const slice = bytes.subarray(start, start + info.compSize);
+    if (info.method === 0) return dec.decode(slice);
+    if (info.method === 8 && typeof DecompressionStream !== 'undefined') {
+      const ds = new DecompressionStream('deflate-raw');
+      const writer = ds.writable.getWriter();
+      writer.write(slice);
+      writer.close();
+      const ab = await new Response(ds.readable).arrayBuffer();
+      return dec.decode(ab);
+    }
+    return null;
+  }
+  return { entries, readText };
+}
+
+async function renderOfficePreview(url, entry) {
+  const ext = extOf(entry.name);
+  const r = await fetch(url);
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  const buf = await r.arrayBuffer();
+  const zip = await unzipEntries(buf);
+  const parser = new DOMParser();
+  const body = el('div', { class: 'md-body' });
+
+  if (ext === 'docx') {
+    const xmlStr = await zip.readText('word/document.xml');
+    if (!xmlStr) throw new Error('ไม่พบเนื้อหาในไฟล์ Word (.docx)');
+    const doc = parser.parseFromString(xmlStr, 'application/xml');
+    const children = doc.getElementsByTagName('w:body')[0]?.childNodes || [];
+    for (const node of children) {
+      if (node.nodeName === 'w:p') {
+        const texts = Array.from(node.getElementsByTagName('w:t')).map(t => t.textContent).join('');
+        if (texts.trim()) body.append(el('p', { text: texts }));
+      } else if (node.nodeName === 'w:tbl') {
+        const tbl = el('table', { class: 'md-table' });
+        for (const trNode of Array.from(node.getElementsByTagName('w:tr'))) {
+          const tr = el('tr');
+          for (const tcNode of Array.from(trNode.getElementsByTagName('w:tc'))) {
+            const cellText = Array.from(tcNode.getElementsByTagName('w:t')).map(t => t.textContent).join(' ');
+            tr.append(el('td', { text: cellText }));
+          }
+          tbl.append(tr);
+        }
+        body.append(tbl);
+      }
+    }
+  } else if (ext === 'xlsx') {
+    const sharedXml = await zip.readText('xl/sharedStrings.xml');
+    const shared = [];
+    if (sharedXml) {
+      const sDoc = parser.parseFromString(sharedXml, 'application/xml');
+      for (const si of Array.from(sDoc.getElementsByTagName('si'))) {
+        shared.push(Array.from(si.getElementsByTagName('t')).map(t => t.textContent).join(''));
+      }
+    }
+    const sheetNames = Array.from(zip.entries.keys()).filter(k => /^xl\/worksheets\/sheet\d+\.xml$/.test(k)).sort();
+    for (const sName of sheetNames) {
+      const sheetXml = await zip.readText(sName);
+      if (!sheetXml) continue;
+      const sDoc = parser.parseFromString(sheetXml, 'application/xml');
+      const tbl = el('table', { class: 'md-table' });
+      const rows = Array.from(sDoc.getElementsByTagName('row')).slice(0, 300);
+      rows.forEach((rNode, rIdx) => {
+        const tr = el('tr');
+        for (const cNode of Array.from(rNode.getElementsByTagName('c'))) {
+          const tAttr = cNode.getAttribute('t');
+          const vText = cNode.getElementsByTagName('v')[0]?.textContent || '';
+          const inlineText = cNode.getElementsByTagName('t')[0]?.textContent || '';
+          const val = tAttr === 's' ? (shared[parseInt(vText, 10)] ?? vText) : (inlineText || vText);
+          tr.append(el(rIdx === 0 ? 'th' : 'td', { text: val }));
+        }
+        tbl.append(tr);
+      });
+      body.append(el('h3', { text: sName.split('/').pop().replace('.xml', '').toUpperCase() }), el('div', { class: 'doc-scroll' }, tbl));
+    }
+  } else if (ext === 'pptx') {
+    const slideNames = Array.from(zip.entries.keys()).filter(k => /^ppt\/slides\/slide\d+\.xml$/.test(k)).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    let idx = 1;
+    for (const sName of slideNames) {
+      const sXml = await zip.readText(sName);
+      if (!sXml) continue;
+      const sDoc = parser.parseFromString(sXml, 'application/xml');
+      const paras = Array.from(sDoc.getElementsByTagName('a:p'))
+        .map(p => Array.from(p.getElementsByTagName('a:t')).map(t => t.textContent).join(''))
+        .filter(s => s.trim().length > 0);
+      body.append(el('div', { class: 'card', style: { marginBottom: '12px' } },
+        el('strong', { text: `สไลด์ ${idx++}` }),
+        ...paras.map(p => el('p', { text: p, style: { margin: '6px 0' } }))
+      ));
+    }
+  } else {
+    throw new Error('ไฟล์รุ่นเก่า (.doc/.xls/.ppt) แนะนำให้ดาวน์โหลดเพื่อเปิดในแอป Office');
+  }
+
+  if (!body.childNodes.length) body.append(el('p', { class: 'muted', text: '(เอกสารไม่มีข้อความ)' }));
+  return el('div', { class: 'doc-preview' },
+    el('div', { class: 'doc-bar' },
+      el('span', { class: 'muted', text: `พรีวิวเอกสาร Office (${entry.name})` }),
+      el('a', { class: 'btn sm', href: fileUrl(entry.path, true), style: { textDecoration: 'none' }, text: 'ดาวน์โหลดไฟล์จริง' })
+    ),
+    body
+  );
+}
 
 // ---------------------------------------------------------------- viewer
 
@@ -52,18 +331,54 @@ const Viewer = {
     this.next.classList.toggle('hidden', this.i >= this.list.length - 1);
     const url = fileUrl(e.path);
     const k = kindOf(e);
+    const ext = extOf(e.name);
     this.body.replaceChildren();
-    if (k === 'image') this.body.append(el('img', { src: url, alt: e.name }));
-    else if (k === 'video') this.body.append(el('video', { src: url, controls: true, autoplay: true, playsinline: true }));
-    else if (k === 'audio') this.body.append(el('div', { class: 'v-info' }, fileIcon('audio'), el('audio', { src: url, controls: true, autoplay: true })));
-    else if (k === 'pdf') this.body.append(el('iframe', { src: url }));
-    else if (k === 'text' && e.size < 4 * 1024 * 1024) {
+    if (k === 'image') {
+      this.body.append(el('img', { src: url, alt: e.name }));
+    } else if (k === 'video') {
+      this.body.append(el('video', { src: url, controls: true, autoplay: true, playsinline: true }));
+    } else if (k === 'audio') {
+      this.body.append(el('div', { class: 'v-info' }, fileIcon('audio'), el('audio', { src: url, controls: true, autoplay: true })));
+    } else if (k === 'pdf') {
+      const wrap = el('div', { style: { display: 'flex', flexDirection: 'column', width: '100%', height: '100%' } },
+        el('div', { class: 'doc-bar' },
+          el('span', { class: 'muted', text: 'เอกสาร PDF' }),
+          el('div', { style: { display: 'flex', gap: '8px' } },
+            el('a', { class: 'btn sm', href: url, target: '_blank', rel: 'noopener', style: { textDecoration: 'none' }, text: 'เปิดเต็มจอ / แท็บใหม่' }),
+            el('a', { class: 'btn sm primary', href: fileUrl(e.path, true), style: { textDecoration: 'none' }, text: 'ดาวน์โหลด' })
+          )
+        ),
+        el('iframe', { src: url, style: { flex: 1, width: '100%', border: 0 } })
+      );
+      this.body.append(wrap);
+    } else if ((k === 'doc' || k === 'sheet' || k === 'slide') && ['docx', 'xlsx', 'pptx'].includes(ext) && e.size < 30 * 1024 * 1024) {
+      const loading = el('div', { class: 'v-info', text: 'กำลังอ่านเอกสาร Office…' });
+      this.body.append(loading);
+      try {
+        const view = await renderOfficePreview(url, e);
+        this.body.replaceChildren(view);
+      } catch (err) {
+        this.body.replaceChildren(el('div', { class: 'v-info' }, fileIcon(k), el('div', { text: err.message || 'ไม่สามารถแสดงตัวอย่างได้' }),
+          el('a', { class: 'btn primary', href: fileUrl(e.path, true), style: { textDecoration: 'none', marginTop: '12px' } }, icon('download'), 'ดาวน์โหลด')));
+      }
+    } else if (k === 'text' && e.size < 4 * 1024 * 1024) {
       const pre = el('pre', { text: 'กำลังโหลด…' });
       this.body.append(pre);
       try {
         const r = await fetch(url, { headers: { Range: 'bytes=0-1048575' } });
-        pre.textContent = await r.text();
-      } catch { pre.textContent = 'โหลดไม่สำเร็จ'; }
+        const text = await r.text();
+        if (ext === 'md' || ext === 'markdown') {
+          this.body.replaceChildren(renderMarkdownView(text));
+        } else if (ext === 'csv' || ext === 'tsv') {
+          this.body.replaceChildren(renderCsvView(text, ext === 'tsv' ? '\t' : ','));
+        } else if (CODE_EXTS.has(ext)) {
+          this.body.replaceChildren(renderCodeView(text, ext));
+        } else {
+          pre.textContent = text;
+        }
+      } catch {
+        pre.textContent = 'โหลดไม่สำเร็จ';
+      }
     } else {
       this.body.append(el('div', { class: 'v-info' }, fileIcon(k), el('div', { text: 'ไม่มีตัวอย่างสำหรับไฟล์ชนิดนี้' }),
         el('div', { style: { margin: '6px 0 16px' }, text: `${fmtSize(e.size)} · แก้ไข ${fmtDate(e.mtime)}` }),
@@ -76,7 +391,9 @@ const Viewer = {
   },
 };
 
-// ---------------------------------------------------------------- uploads
+// ---------------------------------------------------------------- resumable uploads
+
+const CHUNK_SIZE = 4 * 1024 * 1024; // 4 MB chunks for resumable 5G/Wi-Fi uploads
 
 const Uploader = {
   queue: [], active: 0, listeners: new Set(),
@@ -96,33 +413,100 @@ const Uploader = {
   pump() {
     while (this.active < 2 && this.queue.length) this.send(this.queue.shift());
   },
-  send(job) {
+  async queryOffset(job) {
+    try {
+      const st = await api('upload/status', {
+        path: job.dest,
+        name: job.file.name,
+        rel: job.rel || null,
+        size: job.file.size,
+      });
+      return Math.max(0, st.offset || 0);
+    } catch {
+      return 0;
+    }
+  },
+  sendChunk(job, offset, total, t0) {
+    return new Promise((resolve, reject) => {
+      const end = Math.min(total, offset + CHUNK_SIZE);
+      const blob = total === 0 ? job.file : job.file.slice(offset, end);
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/api/upload' + qs({
+        path: job.dest,
+        name: job.file.name,
+        rel: job.rel || null,
+        mtime: job.file.lastModified || null,
+        overwrite: job.overwrite ? 1 : null,
+        resumable: 1,
+        offset,
+        total,
+      }));
+      xhr.upload.onprogress = e => {
+        if (!e.lengthComputable) return;
+        const doneBytes = offset + e.loaded;
+        const pct = total > 0 ? Math.min(100, (doneBytes / total) * 100) : 100;
+        job.bar.style.width = pct + '%';
+        const secs = (performance.now() - t0) / 1000;
+        job.s.textContent = `${pct.toFixed(0)}% · ${fmtRate(doneBytes / Math.max(secs, 0.1))}`;
+      };
+      xhr.onload = () => {
+        let j = {};
+        try { j = JSON.parse(xhr.responseText || '{}'); } catch { /* ignore */ }
+        if (xhr.status === 200) {
+          resolve({ ok: true, nextOffset: j.offset != null ? j.offset : end, done: !j.partial });
+        } else if (xhr.status === 409 && j.offset != null) {
+          resolve({ ok: true, nextOffset: j.offset, done: false });
+        } else {
+          reject({ status: xhr.status, error: j.error || ('HTTP ' + xhr.status), retryable: xhr.status >= 500 || xhr.status === 400 });
+        }
+      };
+      xhr.onerror = () => reject({ status: 0, error: 'network_drop', retryable: true });
+      xhr.send(blob);
+    });
+  },
+  async send(job) {
     this.active++;
     this.badge();
-    const xhr = new XMLHttpRequest();
+    const total = job.file.size;
     const t0 = performance.now();
-    xhr.open('POST', '/api/upload' + qs({ path: job.dest, name: job.file.name, rel: job.rel || null, mtime: job.file.lastModified || null, overwrite: job.overwrite ? 1 : null }));
-    xhr.upload.onprogress = e => {
-      if (!e.lengthComputable) return;
-      const pct = e.loaded / e.total * 100;
-      job.bar.style.width = pct + '%';
-      const secs = (performance.now() - t0) / 1000;
-      job.s.textContent = `${pct.toFixed(0)}% · ${fmtRate(e.loaded / Math.max(secs, .1))}`;
-    };
-    xhr.onload = () => {
-      const ok = xhr.status === 200;
-      job.node.classList.add(ok ? 'done' : 'err');
+    let offset = total > 0 ? await this.queryOffset(job) : 0;
+    if (offset > 0 && offset < total) {
+      job.s.textContent = `ส่งต่อจาก ${fmtSize(offset)}…`;
+    }
+    let retries = 0;
+    let ok = false;
+    while (true) {
+      try {
+        const res = await this.sendChunk(job, offset, total, t0);
+        retries = 0;
+        offset = res.nextOffset;
+        if (res.done || offset >= total) {
+          ok = true;
+          break;
+        }
+      } catch (err) {
+        if (err.status === 401) { Auth.show(); break; }
+        if (err.status === 403 || err.status === 507) {
+          job.s.textContent = err.status === 507 ? 'เกินโควตาพื้นที่' : 'ไม่มีสิทธิ์เขียน';
+          break;
+        }
+        if (err.retryable && retries < 4) {
+          retries++;
+          job.s.textContent = `เน็ตสะดุด กำลังส่งต่อ (${retries}/4)…`;
+          await new Promise(r => setTimeout(r, 1200 * retries));
+          offset = await this.queryOffset(job);
+          continue;
+        }
+        job.s.textContent = err.status === 0 ? 'การเชื่อมต่อหลุด (กดส่งซ้ำเพื่อต่อจากจุดเดิมได้)' : 'ล้มเหลว';
+        break;
+      }
+    }
+    job.node.classList.add(ok ? 'done' : 'err');
+    if (ok) {
       job.bar.style.width = '100%';
-      job.s.textContent = ok ? fmtSize(job.file.size) + ' ✓' : xhr.status === 403 ? 'ไม่มีสิทธิ์เขียน' : 'ล้มเหลว';
-      if (xhr.status === 401) Auth.show();
-      this.finish(job, ok);
-    };
-    xhr.onerror = () => {
-      job.node.classList.add('err');
-      job.s.textContent = 'การเชื่อมต่อหลุด';
-      this.finish(job, false);
-    };
-    xhr.send(job.file);
+      job.s.textContent = fmtSize(total) + ' ✓';
+    }
+    this.finish(job, ok);
   },
   finish(job, ok) {
     this.active--;

@@ -22,12 +22,7 @@ command -v java >/dev/null || { echo "Install a JDK 17+ first (e.g. Temurin)"; e
 
 # Android command-line tools (skipped when an SDK with sdkmanager already exists, e.g. on CI)
 SDKMANAGER="$(command -v sdkmanager || true)"
-if [ -z "$SDKMANAGER" ]; then
-  # Any installed cmdline-tools version (CI runners ship e.g. cmdline-tools/16.0 and/or latest).
-  for c in "$SDK"/cmdline-tools/latest/bin/sdkmanager "$SDK"/cmdline-tools/*/bin/sdkmanager; do
-    if [ -x "$c" ]; then SDKMANAGER="$c"; break; fi
-  done
-fi
+if [ -z "$SDKMANAGER" ] && [ -x "$SDK/cmdline-tools/latest/bin/sdkmanager" ]; then SDKMANAGER="$SDK/cmdline-tools/latest/bin/sdkmanager"; fi
 if [ -z "$SDKMANAGER" ]; then
   case "$(uname -s)" in
     Darwin) os=mac ;;

@@ -50,7 +50,7 @@ public class WebApi implements HttpServer.Handler {
             return;
         }
         securityHeaders(res);
-        if (p.startsWith("/s/")) {
+        if (p.startsWith("/s/") || p.startsWith("/r/")) {
             Shares.get(ctx).serve(req, res);
             return;
         }

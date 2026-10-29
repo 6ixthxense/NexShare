@@ -133,7 +133,7 @@ public class ServerService extends Service {
             public void run() {
                 try {
                     HttpServer hs = new HttpServer(handler, true);
-                    hs.start(HTTPS_PORT, TlsManager.get(ServerService.this).sslContext());
+                    hs.start(HTTPS_PORT, TlsManager.get(ServerService.this).socketFactory());
                     synchronized (ServerService.this) {
                         httpsServer = hs;
                     }

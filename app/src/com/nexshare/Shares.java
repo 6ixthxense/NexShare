@@ -42,13 +42,20 @@ public final class Shares {
     // ---------------------------------------------------------------- store
 
     public synchronized JSONObject create(File target, String owner, long expiresMs, String password) {
+        return create(target, owner, expiresMs, password, "share", "");
+    }
+
+    public synchronized JSONObject create(File target, String owner, long expiresMs, String password, String mode, String label) {
         String id = Crypto.randomId(10); // 16 chars of base32, ~80 bits
+        String m = "request".equalsIgnoreCase(mode) ? "request" : "share";
         JSONObject o = new JSONObject();
         Storage.put(o, "id", id);
         Storage.put(o, "path", target.getPath());
         Storage.put(o, "name", target.getName());
         Storage.put(o, "dir", target.isDirectory());
         Storage.put(o, "owner", owner);
+        Storage.put(o, "mode", m);
+        Storage.put(o, "label", label == null ? "" : label.trim());
         Storage.put(o, "created", System.currentTimeMillis());
         Storage.put(o, "expires", expiresMs);
         Storage.put(o, "pw", password == null || password.isEmpty() ? "" : Crypto.hashPassword(password));
@@ -76,6 +83,8 @@ public final class Shares {
     private static JSONObject publicView(JSONObject o) {
         JSONObject v = new JSONObject();
         for (String k : new String[]{"id", "path", "name", "dir", "owner", "created", "expires", "hits"}) Storage.put(v, k, o.opt(k));
+        Storage.put(v, "mode", o.optString("mode", "share"));
+        Storage.put(v, "label", o.optString("label", ""));
         Storage.put(v, "password", !o.optString("pw").isEmpty());
         return v;
     }
@@ -101,9 +110,9 @@ public final class Shares {
 
     // ---------------------------------------------------------------- public pages
 
-    /** Handles /s/<id>[/f|/zip]. */
+    /** Handles /s/<id>[/f|/zip|/upload] and /r/<id>[/upload]. */
     public void serve(HttpServer.Request req, HttpServer.Response res) throws IOException {
-        String rest = req.path.substring(3); // after "/s/"
+        String rest = req.path.substring(3); // after "/s/" or "/r/"
         int slash = rest.indexOf('/');
         String id = slash < 0 ? rest : rest.substring(0, slash);
         String action = slash < 0 ? "" : rest.substring(slash + 1);
@@ -126,7 +135,8 @@ public final class Shares {
         }
         // The owner might have lost access to the folder since; re-check against their current rights.
         Users.User owner = Users.get(ctx).find(s.optString("owner"));
-        if (owner == null || !owner.allows(base)) {
+        boolean isRequest = "request".equals(s.optString("mode", "share"));
+        if (owner == null || !owner.allows(base) || (isRequest && (!owner.canWrite() || !base.isDirectory()))) {
             page(res, 404, "ไม่พบลิงก์", "<p>ลิงก์นี้ไม่สามารถใช้งานได้แล้ว</p>");
             return;
         }
@@ -136,7 +146,23 @@ public final class Shares {
                 unlock(req, res, id, pwHash, s);
                 return;
             }
+            if ("upload".equals(action)) {
+                res.error(401, "password_required");
+                return;
+            }
             passwordForm(res, s, null);
+            return;
+        }
+        if (isRequest) {
+            if ("upload".equals(action) && "POST".equals(req.method)) {
+                handleRequestUpload(req, res, s, base, owner);
+                return;
+            }
+            if (action.isEmpty()) {
+                requestPage(res, s, base);
+                return;
+            }
+            res.error(404, "not found");
             return;
         }
         File target = base;
@@ -148,7 +174,9 @@ public final class Shares {
             }
             target = new File(base, rel).getCanonicalFile();
             String bp = base.getCanonicalPath();
-            if (!target.getPath().equals(bp) && !target.getPath().startsWith(bp + "/")) {
+            if (!target.getPath().equals(bp)
+                    && !target.getPath().startsWith(bp + File.separator)
+                    && !target.getPath().startsWith(bp + "/")) {
                 res.error(403, "forbidden");
                 return;
             }
@@ -156,7 +184,10 @@ public final class Shares {
         switch (action) {
             case "f":
                 String range = req.header("range");
-                if (range == null || range.startsWith("bytes=0-")) bump(s);
+                if (range == null || range.startsWith("bytes=0-")) {
+                    bump(s);
+                    AuditLog.log(ctx, req, "download", "share:" + s.optString("owner"), target.getPath());
+                }
                 Storage.sendFile(req, res, target, "1".equals(req.param("dl")));
                 return;
             case "zip":
@@ -165,6 +196,7 @@ public final class Shares {
                     return;
                 }
                 bump(s);
+                AuditLog.log(ctx, req, "download", "share:" + s.optString("owner"), target.getPath() + " (.zip)");
                 res.header("Content-Disposition", "attachment; filename*=UTF-8''" + Storage.urlEncode(target.getName() + ".zip"));
                 OutputStream out = res.begin(200, "application/zip", -1);
                 ZipOutputStream z = new ZipOutputStream(new java.io.BufferedOutputStream(out, 65536));
@@ -180,6 +212,34 @@ public final class Shares {
             default:
                 res.error(404, "not found");
         }
+    }
+
+    private void handleRequestUpload(HttpServer.Request req, HttpServer.Response res, JSONObject s, File base, Users.User owner) throws IOException {
+        String name = Storage.cleanName(req.param("name"));
+        if (name == null) {
+            res.error(400, "bad file name");
+            return;
+        }
+        if (Storage.exceedsQuota(ctx, owner, req.contentLength)) {
+            res.error(507, "quota_exceeded");
+            return;
+        }
+        File saved = Storage.receive(req, base, name, false);
+        if (saved == null) {
+            res.error(400, "upload incomplete");
+            return;
+        }
+        String mt = req.param("mtime");
+        if (mt != null) {
+            try { saved.setLastModified(Long.parseLong(mt)); } catch (NumberFormatException ignored) { }
+        }
+        bump(s);
+        AuditLog.log(ctx, req, "request_upload", "request:" + owner.name, saved.getPath());
+        JSONObject out = new JSONObject();
+        Storage.put(out, "ok", true);
+        Storage.put(out, "name", saved.getName());
+        Storage.put(out, "size", saved.length());
+        res.json(200, out.toString());
     }
 
     private String cookieValue(String id, String pwHash) {
@@ -211,8 +271,9 @@ public final class Shares {
         }
         auth.succeed(req);
         String secure = req.secure || req.viaTunnel() ? "; Secure" : "";
-        res.header("Set-Cookie", "nss_" + id + "=" + cookieValue(id, pwHash) + "; Path=/s/" + id + "; HttpOnly; SameSite=Lax; Max-Age=86400" + secure);
-        res.redirect(303, "/s/" + id);
+        String prefix = req.path != null && req.path.startsWith("/r/") ? "/r/" : "/s/";
+        res.header("Set-Cookie", "nss_" + id + "=" + cookieValue(id, pwHash) + "; Path=" + prefix + id + "; HttpOnly; SameSite=Lax; Max-Age=86400" + secure);
+        res.redirect(303, prefix + id);
     }
 
     // ---------------------------------------------------------------- HTML
@@ -230,7 +291,14 @@ public final class Shares {
     }
 
     private void page(HttpServer.Response res, int code, String title, String body) throws IOException {
-        res.header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; media-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
+        page(res, code, title, body, false);
+    }
+
+    private void page(HttpServer.Response res, int code, String title, String body, boolean allowScript) throws IOException {
+        String csp = allowScript
+            ? "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+            : "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; media-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
+        res.header("Content-Security-Policy", csp);
         res.header("Cache-Control", "no-store");
         String html = "<!doctype html><html lang=\"th\"><head><meta charset=\"utf-8\">"
             + "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><meta name=\"robots\" content=\"noindex\">"
@@ -239,6 +307,36 @@ public final class Shares {
             + "<h1>" + Storage.escapeHtml(title) + "</h1>" + body
             + "</main></body></html>";
         res.text(code, "text/html; charset=utf-8", html);
+    }
+
+    private void requestPage(HttpServer.Response res, JSONObject s, File base) throws IOException {
+        String id = s.optString("id");
+        String label = s.optString("label", "");
+        String title = label.isEmpty() ? ("ส่งไฟล์เข้า " + base.getName()) : label;
+        String body = "<p class=\"muted\">เลือกไฟล์เพื่อส่งเข้าโฟลเดอร์ <b>" + Storage.escapeHtml(base.getName()) + "</b> โดยไม่ต้องใช้บัญชี</p>"
+            + "<div class=\"drop\" id=\"drop\" style=\"border:2px dashed #1e6fd9;border-radius:12px;padding:28px 16px;text-align:center;background:rgba(30,111,217,.06);margin:14px 0\">"
+            + "<input type=\"file\" id=\"pick\" multiple style=\"position:fixed;left:-9999px;opacity:0\">"
+            + "<button type=\"button\" id=\"btnPick\">เลือกไฟล์ที่จะอัปโหลด</button>"
+            + "<div class=\"muted\" style=\"margin-top:8px\">หรือลากไฟล์มาวางที่นี่</div>"
+            + "</div>"
+            + "<ul class=\"list\" id=\"q\"></ul>"
+            + expiresNote(s)
+            + "<script>"
+            + "const pick=document.getElementById('pick'),q=document.getElementById('q'),drop=document.getElementById('drop');"
+            + "document.getElementById('btnPick').onclick=()=>pick.click();"
+            + "pick.onchange=()=>{if(pick.files.length)send(pick.files);pick.value='';};"
+            + "drop.ondragover=e=>{e.preventDefault();drop.style.opacity='.7';};"
+            + "drop.ondragleave=()=>{drop.style.opacity='1';};"
+            + "drop.ondrop=e=>{e.preventDefault();drop.style.opacity='1';if(e.dataTransfer.files.length)send(e.dataTransfer.files);};"
+            + "async function send(files){for(const f of files){"
+            + "const li=document.createElement('li');const st=document.createElement('span');st.className='muted';st.textContent='กำลังส่ง…';"
+            + "const nm=document.createElement('span');nm.textContent=f.name;"
+            + "li.append(nm,st);q.prepend(li);"
+            + "try{const r=await fetch('/s/" + id + "/upload?name='+encodeURIComponent(f.name)+'&mtime='+(f.lastModified||0),{method:'POST',body:f});"
+            + "const j=await r.json();if(!r.ok)throw new Error(j.error||r.status);st.textContent='✓ ส่งสำเร็จ ('+j.name+')';st.style.color='#1f8f4e';}"
+            + "catch(e){st.textContent='✗ ล้มเหลว: '+e.message;st.style.color='#d13c3c';}}}"
+            + "</script>";
+        page(res, 200, title, body, true);
     }
 
     private void passwordForm(HttpServer.Response res, JSONObject s, String error) throws IOException {

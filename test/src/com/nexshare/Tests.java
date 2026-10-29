@@ -151,7 +151,12 @@ public final class Tests {
             File secret = new File(tmp, "secret");
             secret.mkdirs();
             File link = new File(root, "link");
-            Files.createSymbolicLink(link.toPath(), secret.toPath());
+            try {
+                Files.createSymbolicLink(link.toPath(), secret.toPath());
+            } catch (java.nio.file.FileSystemException winNoPrivilege) {
+                Process p = new ProcessBuilder("cmd", "/c", "mklink", "/J", link.getPath(), secret.getPath()).start();
+                if (p.waitFor() != 0) throw winNoPrivilege;
+            }
             try {
                 Storage.within(link.getPath(), Collections.singletonList(root.getPath()));
                 throw new AssertionError("followed symlink out of storage");
@@ -311,22 +316,25 @@ public final class Tests {
     // ---------------------------------------------------------------- TLS
 
     static void tlsTests() throws Exception {
-        test("self-signed cert parses and has SANs", () -> {
+        test("self-signed cert parses, has SANs (including Tailscale IP), and detects IP changes", () -> {
             char[] pw = "pw".toCharArray();
             KeyStore ks = CertGen.createKeyStore("nexshare.local", Arrays.asList("nexshare.local", "localhost"),
-                Arrays.asList("192.168.1.5", "127.0.0.1"), pw);
+                Arrays.asList("192.168.1.5", "100.100.1.2", "127.0.0.1"), pw);
             X509Certificate c = (X509Certificate) ks.getCertificate(CertGen.ALIAS);
             c.checkValidity();
             c.verify(c.getPublicKey());
             eq(2, c.getVersion() - 1);
             String sans = String.valueOf(c.getSubjectAlternativeNames());
-            check(sans.contains("nexshare.local") && sans.contains("192.168.1.5"), sans);
+            check(sans.contains("nexshare.local") && sans.contains("192.168.1.5") && sans.contains("100.100.1.2"), sans);
+            check(CertGen.hasIps(c, Arrays.asList("127.0.0.1", "192.168.1.5", "100.100.1.2")), "hasIps current");
+            check(!CertGen.hasIps(c, Arrays.asList("127.0.0.1", "192.168.1.99")), "hasIps detects changed LAN IP");
+            check(!CertGen.hasIps(c, Arrays.asList("127.0.0.1", "100.101.2.3")), "hasIps detects new Tailscale IP");
             check(c.getExtendedKeyUsage().contains("1.3.6.1.5.5.7.3.1"), "serverAuth");
             check(c.getBasicConstraints() == -1, "not a CA");
             check(CertGen.pem(c).startsWith("-----BEGIN CERTIFICATE-----\n"), "pem");
             check(CertGen.fingerprint(c).length() == 95, "fingerprint");
         });
-        test("HTTPS server works with the generated cert (store + reload as PKCS12)", () -> {
+        test("HTTPS server works with generated cert and redirects plain HTTP on the HTTPS port", () -> {
             char[] pw = "secret".toCharArray();
             KeyStore ks = CertGen.createKeyStore("nexshare.local", Collections.singletonList("localhost"),
                 Collections.singletonList("127.0.0.1"), pw);
@@ -343,8 +351,17 @@ public final class Tests {
             SSLContext sc = SSLContext.getInstance("TLS");
             sc.init(kmf.getKeyManagers(), null, null);
             HttpServer s = new HttpServer((req, res) -> res.text(200, "text/plain", "secure=" + req.secure), true);
-            s.start(0, sc);
+            s.start(0, sc.getSocketFactory());
             try {
+                // 1) Plain HTTP request sent to the HTTPS port gets a 301 redirect to https://
+                String plain = exchange(s.port(), "GET /files/a?x=1 HTTP/1.1\r\nHost: nexshare.local:" + s.port() + "\r\nConnection: close\r\n\r\n");
+                check(plain.startsWith("HTTP/1.1 301"), plain);
+                check(plain.contains("Location: https://nexshare.local:" + s.port() + "/files/a?x=1\r\n"), plain);
+                // A hostile Host header can't inject headers or markup into the redirect.
+                String evil = exchange(s.port(), "GET / HTTP/1.1\r\nHost: evil\"><script>\r\n\r\n");
+                check(evil.startsWith("HTTP/1.1 301") && !evil.contains("<script>") && evil.contains("Location: https://127.0.0.1:"), evil);
+
+                // 2) Real TLS handshake on the same port succeeds
                 final X509Certificate want = (X509Certificate) loaded.getCertificate(CertGen.ALIAS);
                 SSLContext client = SSLContext.getInstance("TLS");
                 client.init(null, new TrustManager[]{new X509TrustManager() {
@@ -360,12 +377,6 @@ public final class Tests {
                     String r = new String(readAll(sock.getInputStream()), StandardCharsets.US_ASCII);
                     check(r.startsWith("HTTP/1.1 200") && r.endsWith("secure=true"), r);
                 }
-                // Plain http:// typed against the HTTPS port: redirect instead of a dead connection.
-                String plain = exchange(s.port(), "GET /files?x=1 HTTP/1.1\r\nHost: 192.168.1.45:8443\r\n\r\n");
-                check(plain.startsWith("HTTP/1.1 301") && plain.contains("Location: https://192.168.1.45:8443/files?x=1\r\n"), plain);
-                // A hostile Host header can't inject headers or markup into the redirect.
-                String evil = exchange(s.port(), "GET / HTTP/1.1\r\nHost: evil\"><script>\r\n\r\n");
-                check(evil.startsWith("HTTP/1.1 301") && !evil.contains("<script>") && evil.contains("Location: https://127.0.0.1:"), evil);
             } finally {
                 s.stop();
                 f.delete();

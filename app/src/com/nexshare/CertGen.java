@@ -97,6 +97,27 @@ public final class CertGen {
         return sb.append("-----END CERTIFICATE-----\n").toString();
     }
 
+    /** Returns true if the certificate's SubjectAlternativeName extension includes all given IPv4/IPv6 strings. */
+    public static boolean hasIps(X509Certificate cert, List<String> wantIps) {
+        if (cert == null || wantIps == null) return false;
+        try {
+            java.util.Collection<List<?>> sans = cert.getSubjectAlternativeNames();
+            if (sans == null) return wantIps.isEmpty();
+            java.util.Set<String> present = new java.util.HashSet<>();
+            for (List<?> entry : sans) {
+                if (entry != null && entry.size() >= 2 && Integer.valueOf(7).equals(entry.get(0)) && entry.get(1) != null) {
+                    present.add(String.valueOf(entry.get(1)));
+                }
+            }
+            for (String ip : wantIps) {
+                if (ip != null && !ip.isEmpty() && !present.contains(ip)) return false;
+            }
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     // ---------------------------------------------------------------- DER
 
     static byte[] tlv(int tag, byte[] value) {

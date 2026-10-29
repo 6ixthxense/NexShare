@@ -236,7 +236,7 @@ public class MdnsResponder implements Runnable {
         return lanAddress();
     }
 
-    /** Prefers Wi-Fi, then hotspot, then any private IPv4. */
+    /** Prefers Wi-Fi, then hotspot, then any private IPv4 (excluding Tailscale/VPN tunnels). */
     public static Inet4Address lanAddress() {
         Inet4Address any = null;
         try {
@@ -244,13 +244,63 @@ public class MdnsResponder implements Runnable {
                 if (!ni.isUp() || ni.isLoopback()) continue;
                 Inet4Address ip = ipv4Of(ni);
                 if (ip == null) continue;
-                String n = ni.getName();
+                String n = ni.getName().toLowerCase(Locale.ROOT);
+                if (n.startsWith("tailscale") || n.startsWith("tun") || n.startsWith("utun") || n.startsWith("wg")) continue;
                 if (n.startsWith("wlan")) return ip;
                 if (n.startsWith("ap") || n.startsWith("swlan") || n.startsWith("eth")) any = ip;
                 else if (any == null && ip.isSiteLocalAddress()) any = ip;
             }
         } catch (Exception ignored) { }
         return any;
+    }
+
+    /**
+     * Detects a Tailscale IPv4 address (CGNAT 100.64.0.0/10 on a tun/tailscale interface).
+     * Excludes cellular interfaces (rmnet/ccmni/clat) that may also use CGNAT.
+     */
+    public static Inet4Address tailscaleAddress() {
+        Inet4Address fallback = null;
+        try {
+            for (NetworkInterface ni : Collections.list(NetworkInterface.getNetworkInterfaces())) {
+                if (!ni.isUp() || ni.isLoopback()) continue;
+                String n = ni.getName().toLowerCase(Locale.ROOT);
+                if (n.startsWith("rmnet") || n.startsWith("ccmni") || n.startsWith("v4-")
+                        || n.startsWith("pdp") || n.startsWith("clat") || n.startsWith("dummy")) continue;
+                for (InterfaceAddress ia : ni.getInterfaceAddresses()) {
+                    if (!(ia.getAddress() instanceof Inet4Address)) continue;
+                    Inet4Address ip = (Inet4Address) ia.getAddress();
+                    if (!isTailscaleAddress(ip)) continue;
+                    if (n.startsWith("tailscale") || n.startsWith("tun") || n.startsWith("utun") || n.startsWith("wg")) {
+                        return ip;
+                    }
+                    if (fallback == null) fallback = ip;
+                }
+            }
+        } catch (Exception ignored) { }
+        return fallback;
+    }
+
+    /** True when the IPv4 address falls inside RFC 6598 CGNAT 100.64.0.0/10 used by Tailscale. */
+    public static boolean isTailscaleAddress(Inet4Address ip) {
+        if (ip == null) return false;
+        byte[] b = ip.getAddress();
+        return b.length == 4 && (b[0] & 0xff) == 100 && (b[1] & 0xc0) == 64;
+    }
+
+    /** True when the dotted-quad string is a Tailscale 100.64.0.0/10 address. */
+    public static boolean isTailscaleAddress(String ip) {
+        if (ip == null || !ip.startsWith("100.")) return false;
+        String[] p = ip.split("\\.");
+        if (p.length != 4) return false;
+        try {
+            int b0 = Integer.parseInt(p[0]);
+            int b1 = Integer.parseInt(p[1]);
+            int b2 = Integer.parseInt(p[2]);
+            int b3 = Integer.parseInt(p[3]);
+            return b0 == 100 && (b1 >= 64 && b1 <= 127) && (b2 >= 0 && b2 <= 255) && (b3 >= 0 && b3 <= 255);
+        } catch (NumberFormatException e) {
+            return false;
+        }
     }
 
     private static int toInt(Inet4Address a) {
